@@ -1,11 +1,41 @@
 openapi: 3.0.3
 info:
   title: Smart Credit Cabinet API
-  version: 0.1.0
+  version: 0.2.0
   description: |
     Контракт API кредитного конвейера для малого бизнеса (хакатон).
     Владелец: Участник 2. Изменения только отдельным PR с пометкой `contract`.
     Статусы и правила переходов: docs/STATE_MACHINE.md. Скоринг: docs/SCORING.md.
+
+    Общие правила:
+    - Все бизнес-ручки под префиксом `/api/v1`. Health-эндпоинты и `/docs` лежат на корне (`/health/live`, `/health/ready`, `/docs`).
+    - Заголовок `X-Correlation-ID`: принимается от клиента (опционально), иначе генерируется; всегда возвращается в ответе.
+    - `ETag` заявки = `"<version>"` (кавычки входят в значение). `If-None-Match` совпал -> 304.
+    - Клиент к чужой заявке/документу/офферу получает 404 (не 403).
+    - SSE: `GET /applications/{id}/events` читается через `fetch` со стримом и заголовком `Authorization`
+      (нативный `EventSource` не подходит; токен в query не передаём, чтобы он не попадал в логи).
+    - Пагинация списков: `limit` (1-100, по умолчанию 20) и `offset` (>= 0); общее число в заголовке `X-Total-Count`. Пустой результат — `200` и `[]` с `X-Total-Count: 0` (не 404).
+
+    Цепочка после оффера (единое правило, подробности в STATE_MACHINE.md):
+    `accept` (CLIENT) → `ACCEPTED` → воркер, задача `prepare_documents` (SYSTEM) → `SIGNING` → `sign` (CLIENT) → `DISBURSED`.
+    `accept` возвращает заявку в статусе `ACCEPTED`; `sign` допустим только в `SIGNING`, иначе 409 INVALID_TRANSITION.
+
+    Коды ошибок (каждая ручка перечисляет свои коды в `responses`; смысл кодов одинаков везде):
+    | HTTP | code | Когда |
+    |---|---|---|
+    | 401 | UNAUTHORIZED | нет, просрочен или невалиден токен; неверный логин или пароль |
+    | 403 | FORBIDDEN | роль не подходит для ручки; `/dev/reset-demo` вне DEMO_MODE |
+    | 404 | NOT_FOUND | ресурса нет **или он чужой** (существование не раскрываем) |
+    | 409 | INVALID_TRANSITION | операция недопустима в текущем статусе заявки |
+    | 409 | CONFLICT | нарушена уникальность или занятость: email, ИНН, заявка уже взята оператором |
+    | 409 | VERSION_CONFLICT | `If-Match` не совпал с текущей `version` |
+    | 409 | IDEMPOTENCY_CONFLICT | `Idempotency-Key` уже использован для другой заявки |
+    | 413 | PAYLOAD_TOO_LARGE | файл больше `DOC_MAX_SIZE_MB` |
+    | 422 | VALIDATION_ERROR | любые ошибки входных данных (тело, query, заголовки), неполная заявка при submit; `details` — список `{field, message}` |
+    | 429 | RATE_LIMITED | лимит попыток входа; заголовок `Retry-After` |
+    | 500 | INTERNAL_ERROR | непредвиденная ошибка; подробности только в логах по `X-Correlation-ID` |
+
+    Для клиента: 4xx кроме 409 — ошибка запроса (исправить и повторить); 409 — конфликт состояния (перечитать заявку и действовать по её статусу); 429/5xx — повторить позже.
 servers:
   - url: http://localhost:8000/api/v1
     description: Локальный запуск через docker compose
@@ -33,8 +63,9 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/RegisterRequest' }
       responses:
-        '201': { description: Создан, content: { application/json: { schema: { $ref: '#/components/schemas/TokenResponse' } } } }
-        '409': { $ref: '#/components/responses/Error' }
+        '201': { description: Создан (роль всегда CLIENT), content: { application/json: { schema: { $ref: '#/components/schemas/TokenResponse' } } } }
+        '409': { description: "CONFLICT — email уже зарегистрирован", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '422': { description: "VALIDATION_ERROR — email, пароль (от 8 символов) или full_name не прошли валидацию", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
   /auth/login:
     post:
       tags: [Auth]
@@ -47,18 +78,21 @@ paths:
             schema: { $ref: '#/components/schemas/LoginRequest' }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/TokenResponse' } } } }
-        '401': { $ref: '#/components/responses/Error' }
+        '401': { description: "UNAUTHORIZED — неверный email или пароль", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '422': { description: "VALIDATION_ERROR — нет email или пароля", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '429': { description: "RATE_LIMITED — превышен лимит попыток входа; см. заголовок Retry-After", headers: { Retry-After: { schema: { type: integer } } }, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
   /auth/me:
     get:
       tags: [Auth]
       summary: Текущий пользователь
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/User' } } } }
-        '401': { $ref: '#/components/responses/Error' }
+        '401': { description: "UNAUTHORIZED — токен отсутствует, просрочен или невалиден", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
   /products:
     get:
       tags: [Catalog]
-      summary: Список кредитных продуктов
+      security: []
+      summary: Список кредитных продуктов (публичный)
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Product' } } } } }
   /products/recommend:
@@ -72,13 +106,17 @@ paths:
             schema: { $ref: '#/components/schemas/RecommendRequest' }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/RecommendResponse' } } } }
+        '401': { description: "UNAUTHORIZED — токен отсутствует, просрочен или невалиден", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '422': { description: "VALIDATION_ERROR — ответы опросника не прошли валидацию", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
   /company:
     get:
       tags: [Company]
       summary: Профиль моей компании
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Company' } } } }
-        '404': { $ref: '#/components/responses/Error' }
+        '401': { description: "UNAUTHORIZED — токен отсутствует, просрочен или невалиден", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '403': { description: "FORBIDDEN — роль не CLIENT", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '404': { description: "NOT_FOUND — профиль компании ещё не создан", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     put:
       tags: [Company]
       summary: Создать или обновить профиль компании
@@ -89,7 +127,10 @@ paths:
             schema: { $ref: '#/components/schemas/CompanyInput' }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Company' } } } }
-        '422': { $ref: '#/components/responses/Error' }
+        '401': { description: "UNAUTHORIZED — токен отсутствует, просрочен или невалиден", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '403': { description: "FORBIDDEN — роль не CLIENT", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '409': { description: "CONFLICT — ИНН уже закреплён за другим пользователем", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '422': { description: "VALIDATION_ERROR — ИНН неверной длины или не проходит контрольную сумму, поля не прошли валидацию", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
   /company/lookup:
     get:
       tags: [Company]
@@ -98,16 +139,23 @@ paths:
         - { name: inn, in: query, required: true, schema: { type: string, pattern: '^\d{10}(\d{2})?$' } }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/CompanyInput' } } } }
-        '404': { $ref: '#/components/responses/Error' }
-        '422': { $ref: '#/components/responses/Error' }
+        '401': { description: "UNAUTHORIZED — токен отсутствует, просрочен или невалиден", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '403': { description: "FORBIDDEN — роль не CLIENT", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '404': { description: "NOT_FOUND — ИНН не найден в реестре (мок ЕГРЮЛ)", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '422': { description: "VALIDATION_ERROR — ИНН неверной длины или не проходит контрольную сумму", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
   /applications:
     get:
       tags: [Applications]
-      summary: Мои заявки
+      summary: Мои заявки (новые сверху)
       parameters:
         - { name: status, in: query, schema: { $ref: '#/components/schemas/ApplicationStatus' } }
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Offset' }
       responses:
-        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/ApplicationSummary' } } } } }
+        '200': { description: OK, headers: { X-Total-Count: { schema: { type: integer } } }, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/ApplicationSummary' } } } } }
+        '401': { description: "UNAUTHORIZED — токен отсутствует, просрочен или невалиден", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '403': { description: "FORBIDDEN — роль не CLIENT", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '422': { description: "VALIDATION_ERROR — некорректные limit, offset или status", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     post:
       tags: [Applications]
       summary: Создать черновик заявки
@@ -118,7 +166,9 @@ paths:
             schema: { $ref: '#/components/schemas/ApplicationInput' }
       responses:
         '201': { description: Создан, content: { application/json: { schema: { $ref: '#/components/schemas/Application' } } } }
-        '422': { $ref: '#/components/responses/Error' }
+        '401': { description: "UNAUTHORIZED — токен отсутствует, просрочен или невалиден", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '403': { description: "FORBIDDEN — роль не CLIENT", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '422': { description: "VALIDATION_ERROR — профиль компании не создан, неизвестный product_code или значения не прошли валидацию", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
   /applications/{id}:
     parameters:
       - { $ref: '#/components/parameters/ApplicationId' }
@@ -130,38 +180,56 @@ paths:
       responses:
         '200': { description: OK, headers: { ETag: { schema: { type: string } } }, content: { application/json: { schema: { $ref: '#/components/schemas/Application' } } } }
         '304': { description: Не изменилось }
-        '404': { $ref: '#/components/responses/Error' }
+        '401': { description: "UNAUTHORIZED — токен отсутствует, просрочен или невалиден", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '403': { description: "FORBIDDEN — роль не CLIENT", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '404': { description: "NOT_FOUND — заявка не существует или принадлежит другому клиенту", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     patch:
       tags: [Applications]
-      summary: Изменить черновик (только в статусе DRAFT)
+      summary: Частично изменить черновик (только в статусе DRAFT; иначе 409 INVALID_TRANSITION)
+      parameters:
+        - { $ref: '#/components/parameters/IfMatch' }
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/ApplicationInput' }
+            schema: { $ref: '#/components/schemas/ApplicationPatch' }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Application' } } } }
-        '409': { $ref: '#/components/responses/Error' }
+        '401': { description: "UNAUTHORIZED — токен отсутствует, просрочен или невалиден", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '403': { description: "FORBIDDEN — роль не CLIENT", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '404': { description: "NOT_FOUND — заявка не существует или принадлежит другому клиенту", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '409': { description: "INVALID_TRANSITION — заявка не в статусе DRAFT; VERSION_CONFLICT — заголовок If-Match не совпал с текущей version заявки", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '422': { description: "VALIDATION_ERROR — значения вне диапазонов продукта или неверного типа", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
   /applications/{id}/submit:
     post:
       tags: [Applications]
-      summary: Подать заявку (идемпотентно)
+      summary: Подать заявку (DRAFT -> SUBMITTED, идемпотентно)
+      description: |
+        Повтор с тем же `Idempotency-Key` по той же заявке возвращает тот же ответ 202 без новых переходов.
+        Тот же ключ для другой заявки -> 409 IDEMPOTENCY_CONFLICT. Неполная заявка (нет компании, выручки,
+        прибыли, платежей, сумма/срок вне диапазона продукта) -> 422 VALIDATION_ERROR со списком полей в `details`.
       parameters:
         - { $ref: '#/components/parameters/ApplicationId' }
         - { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 8, maxLength: 100 } }
       responses:
         '202': { description: Принята в обработку, content: { application/json: { schema: { $ref: '#/components/schemas/Application' } } } }
-        '409': { $ref: '#/components/responses/Error' }
-        '422': { $ref: '#/components/responses/Error' }
+        '401': { description: "UNAUTHORIZED — токен отсутствует, просрочен или невалиден", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '403': { description: "FORBIDDEN — роль не CLIENT", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '404': { description: "NOT_FOUND — заявка не существует или принадлежит другому клиенту", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '409': { description: "INVALID_TRANSITION — заявка не в статусе DRAFT; IDEMPOTENCY_CONFLICT — Idempotency-Key уже использован для другой заявки", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '422': { description: "VALIDATION_ERROR — заявка неполна или вне диапазонов продукта (details — список полей), нет заголовка Idempotency-Key", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
   /applications/{id}/cancel:
     post:
       tags: [Applications]
-      summary: Отменить заявку
+      summary: Отменить заявку (допустимо из DRAFT, NEEDS_INFO, OFFER, COUNTER_OFFER; иначе 409 INVALID_TRANSITION)
       parameters:
         - { $ref: '#/components/parameters/ApplicationId' }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Application' } } } }
-        '409': { $ref: '#/components/responses/Error' }
+        '401': { description: "UNAUTHORIZED — токен отсутствует, просрочен или невалиден", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '403': { description: "FORBIDDEN — роль не CLIENT", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '404': { description: "NOT_FOUND — заявка не существует или принадлежит другому клиенту", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '409': { description: "INVALID_TRANSITION — статус не DRAFT, NEEDS_INFO, OFFER или COUNTER_OFFER", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
   /applications/{id}/history:
     get:
       tags: [Applications]
@@ -170,10 +238,13 @@ paths:
         - { $ref: '#/components/parameters/ApplicationId' }
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/StatusHistoryItem' } } } } }
+        '401': { description: "UNAUTHORIZED — токен отсутствует, просрочен или невалиден", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '403': { description: "FORBIDDEN — роль не CLIENT", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '404': { description: "NOT_FOUND — заявка не существует или принадлежит другому клиенту", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
   /applications/{id}/events:
     get:
       tags: [Applications]
-      summary: Поток событий статуса (Server-Sent Events)
+      summary: Поток событий статуса (Server-Sent Events; читать через fetch с Authorization; heartbeat-комментарий каждые 15 с)
       parameters:
         - { $ref: '#/components/parameters/ApplicationId' }
       responses:
@@ -182,6 +253,9 @@ paths:
           content:
             text/event-stream:
               schema: { $ref: '#/components/schemas/StatusEvent' }
+        '401': { description: "UNAUTHORIZED — токен отсутствует, просрочен или невалиден", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '403': { description: "FORBIDDEN — роль не CLIENT", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '404': { description: "NOT_FOUND — заявка не существует или принадлежит другому клиенту", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
   /applications/{id}/documents:
     parameters:
       - { $ref: '#/components/parameters/ApplicationId' }
@@ -190,9 +264,13 @@ paths:
       summary: Документы заявки
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Document' } } } } }
+        '401': { description: "UNAUTHORIZED — токен отсутствует, просрочен или невалиден", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '403': { description: "FORBIDDEN — роль не CLIENT", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '404': { description: "NOT_FOUND — заявка не существует или принадлежит другому клиенту", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     post:
       tags: [Documents]
-      summary: Загрузить документ
+      summary: Загрузить документ (только в статусах DRAFT и NEEDS_INFO; иначе 409 INVALID_TRANSITION)
+      description: Допустимые типы файлов (`DOC_ALLOWED_MIME`) и размер (`DOC_MAX_SIZE_MB`) задаются через env.
       requestBody:
         required: true
         content:
@@ -205,8 +283,23 @@ paths:
                 file: { type: string, format: binary }
       responses:
         '201': { description: Создан, content: { application/json: { schema: { $ref: '#/components/schemas/Document' } } } }
-        '413': { $ref: '#/components/responses/Error' }
-        '422': { $ref: '#/components/responses/Error' }
+        '401': { description: "UNAUTHORIZED — токен отсутствует, просрочен или невалиден", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '403': { description: "FORBIDDEN — роль не CLIENT", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '404': { description: "NOT_FOUND — заявка не существует или принадлежит другому клиенту", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '409': { description: "INVALID_TRANSITION — статус не DRAFT и не NEEDS_INFO", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '413': { description: "PAYLOAD_TOO_LARGE — файл больше DOC_MAX_SIZE_MB", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '422': { description: "VALIDATION_ERROR — MIME-тип не разрешён, файл пуст или неизвестный doc_type", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+  /applications/{id}/documents/{doc_id}/download:
+    get:
+      tags: [Documents]
+      summary: Скачать документ (владелец заявки или OPERATOR/ADMIN)
+      parameters:
+        - { $ref: '#/components/parameters/ApplicationId' }
+        - { name: doc_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Файл, content: { application/octet-stream: { schema: { type: string, format: binary } } } }
+        '401': { description: "UNAUTHORIZED — токен отсутствует, просрочен или невалиден", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '404': { description: "NOT_FOUND — заявка или документ не найдены либо принадлежат другому клиенту (OPERATOR/ADMIN видят любые)", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
   /applications/{id}/info-request:
     get:
       tags: [Applications]
@@ -215,10 +308,17 @@ paths:
         - { $ref: '#/components/parameters/ApplicationId' }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/InfoRequest' } } } }
-        '404': { $ref: '#/components/responses/Error' }
+        '401': { description: "UNAUTHORIZED — токен отсутствует, просрочен или невалиден", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '403': { description: "FORBIDDEN — роль не CLIENT", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '404': { description: "NOT_FOUND — заявка чужая или запроса уточнений нет", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     post:
       tags: [Applications]
-      summary: Ответить на запрос уточнений (переводит NEEDS_INFO → DATA_CHECK)
+      summary: Ответить на запрос уточнений (NEEDS_INFO → DATA_CHECK)
+      description: |
+        `corrected_fields` принимает только белый список: поля заявки (`amount_rub`, `term_months`, `purpose`,
+        `revenue_12m_rub`, `net_profit_12m_rub`, `existing_monthly_payments_rub`) и профиля (`name`, `okved`, `address`,
+        `registration_date`). Остальное -> 422. Недостающие документы загружаются через `/documents` до этого вызова.
+        Лимит раундов уточнений `MAX_INFO_ROUNDS` (по умолчанию 2); сверх лимита заявка уходит в MANUAL_REVIEW.
       parameters:
         - { $ref: '#/components/parameters/ApplicationId' }
       requestBody:
@@ -228,7 +328,11 @@ paths:
             schema: { $ref: '#/components/schemas/InfoResponse' }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Application' } } } }
-        '409': { $ref: '#/components/responses/Error' }
+        '401': { description: "UNAUTHORIZED — токен отсутствует, просрочен или невалиден", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '403': { description: "FORBIDDEN — роль не CLIENT", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '404': { description: "NOT_FOUND — заявка не существует или принадлежит другому клиенту", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '409': { description: "INVALID_TRANSITION — статус не NEEDS_INFO", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '422': { description: "VALIDATION_ERROR — поле вне белого списка corrected_fields или значение неверного типа", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
   /applications/{id}/offer:
     get:
       tags: [Offer]
@@ -237,40 +341,56 @@ paths:
         - { $ref: '#/components/parameters/ApplicationId' }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Offer' } } } }
-        '404': { $ref: '#/components/responses/Error' }
+        '401': { description: "UNAUTHORIZED — токен отсутствует, просрочен или невалиден", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '403': { description: "FORBIDDEN — роль не CLIENT", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '404': { description: "NOT_FOUND — заявка чужая или активного оффера нет", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
   /applications/{id}/offer/accept:
     post:
       tags: [Offer]
-      summary: Принять предложение (→ ACCEPTED → SIGNING)
+      summary: Принять предложение (OFFER/COUNTER_OFFER → ACCEPTED, актор CLIENT; дальше воркер задачей `prepare_documents` переводит в SIGNING)
+      description: Ответ содержит заявку в статусе `ACCEPTED`. Переход в `SIGNING` выполняет воркер асинхронно (актор SYSTEM), клиент узнаёт о нём через SSE или опрос.
       parameters:
+        - { $ref: '#/components/parameters/IfMatch' }
         - { $ref: '#/components/parameters/ApplicationId' }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Application' } } } }
-        '409': { $ref: '#/components/responses/Error' }
+        '401': { description: "UNAUTHORIZED — токен отсутствует, просрочен или невалиден", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '403': { description: "FORBIDDEN — роль не CLIENT", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '404': { description: "NOT_FOUND — заявка не существует или принадлежит другому клиенту", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '409': { description: "INVALID_TRANSITION — статус не OFFER и не COUNTER_OFFER, либо оффер не ACTIVE или истёк; VERSION_CONFLICT — заголовок If-Match не совпал с текущей version заявки", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
   /applications/{id}/offer/decline:
     post:
       tags: [Offer]
       summary: Отказаться от предложения (→ CANCELLED)
       parameters:
+        - { $ref: '#/components/parameters/IfMatch' }
         - { $ref: '#/components/parameters/ApplicationId' }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Application' } } } }
-        '409': { $ref: '#/components/responses/Error' }
+        '401': { description: "UNAUTHORIZED — токен отсутствует, просрочен или невалиден", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '403': { description: "FORBIDDEN — роль не CLIENT", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '404': { description: "NOT_FOUND — заявка не существует или принадлежит другому клиенту", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '409': { description: "INVALID_TRANSITION — статус не OFFER и не COUNTER_OFFER, либо оффер не ACTIVE или истёк; VERSION_CONFLICT — заголовок If-Match не совпал с текущей version заявки", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
   /applications/{id}/sign:
     post:
       tags: [Offer]
-      summary: «Подписать» документы (имитация; SIGNING → DISBURSED)
+      summary: «Подписать» документы (имитация; SIGNING → DISBURSED, актор CLIENT; допустимо только в SIGNING)
       parameters:
         - { $ref: '#/components/parameters/ApplicationId' }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Application' } } } }
-        '409': { $ref: '#/components/responses/Error' }
+        '401': { description: "UNAUTHORIZED — токен отсутствует, просрочен или невалиден", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '403': { description: "FORBIDDEN — роль не CLIENT", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '404': { description: "NOT_FOUND — заявка не существует или принадлежит другому клиенту", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '409': { description: "INVALID_TRANSITION — статус не SIGNING (воркер ещё не выполнил prepare_documents: повторить после перехода в SIGNING)", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
   /feed:
     get:
       tags: [Feed]
       summary: Блок «Полезное для вас» (зависит от статуса заявки и типа бизнеса)
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/FeedItem' } } } } }
+        '401': { description: "UNAUTHORIZED — токен отсутствует, просрочен или невалиден", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '403': { description: "FORBIDDEN — роль не CLIENT", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
   /operator/queue:
     get:
       tags: [Operator]
@@ -278,9 +398,42 @@ paths:
       parameters:
         - { name: status, in: query, schema: { $ref: '#/components/schemas/ApplicationStatus' } }
         - { name: assigned_to_me, in: query, schema: { type: boolean } }
+        - { name: product_code, in: query, schema: { type: string, enum: [WORKING_CAPITAL, EQUIPMENT, EXPRESS] } }
+        - { name: amount_from, in: query, schema: { type: integer } }
+        - { name: amount_to, in: query, schema: { type: integer } }
+        - { name: q, in: query, description: Поиск по ИНН или названию компании, schema: { type: string, maxLength: 100 } }
+        - { name: sort, in: query, schema: { type: string, enum: [updated_at_desc, updated_at_asc, amount_desc, amount_asc], default: updated_at_desc } }
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Offset' }
       responses:
-        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/ApplicationSummary' } } } } }
-        '403': { $ref: '#/components/responses/Error' }
+        '200':
+          description: >-
+            OK. Без `status` возвращаются заявки всех статусов, кроме DRAFT (черновики оператору не видны);
+            по умолчанию сортировка `updated_at_desc`. Пустой результат — `[]` и `X-Total-Count: 0`.
+            UI оператора по умолчанию запрашивает `status=MANUAL_REVIEW`.
+          headers:
+            X-Total-Count: { description: Всего записей по фильтру (без учёта limit и offset), schema: { type: integer }, example: 1 }
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/ApplicationSummary' } }
+              examples:
+                page:
+                  summary: Одна заявка (заголовок X-Total-Count = 1)
+                  value:
+                    - id: 3f2b8c1e-5a47-4d0e-9b61-0c7d2e8a1f10
+                      company_name: ООО «Свежий хлеб»
+                      status: MANUAL_REVIEW
+                      product_code: WORKING_CAPITAL
+                      amount_rub: 1500000
+                      term_months: 12
+                      submitted_at: '2026-10-21T09:15:00Z'
+                      updated_at: '2026-10-21T09:15:42Z'
+                empty:
+                  summary: Ничего не найдено (заголовок X-Total-Count = 0)
+                  value: []
+        '401': { description: "UNAUTHORIZED — токен отсутствует, просрочен или невалиден", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '403': { description: "FORBIDDEN — роль не OPERATOR/ADMIN", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '422': { description: "VALIDATION_ERROR — некорректные фильтры, sort, limit или offset", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
   /operator/applications/{id}:
     get:
       tags: [Operator]
@@ -289,21 +442,27 @@ paths:
         - { $ref: '#/components/parameters/ApplicationId' }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/OperatorApplication' } } } }
-        '403': { $ref: '#/components/responses/Error' }
+        '401': { description: "UNAUTHORIZED — токен отсутствует, просрочен или невалиден", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '403': { description: "FORBIDDEN — роль не OPERATOR/ADMIN", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '404': { description: "NOT_FOUND — заявка не найдена", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
   /operator/applications/{id}/take:
     post:
       tags: [Operator]
-      summary: Взять заявку в работу
+      summary: Взять заявку в работу (только MANUAL_REVIEW; статус не меняется, пишется аудит-событие; занята другим -> 409 CONFLICT)
       parameters:
         - { $ref: '#/components/parameters/ApplicationId' }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/OperatorApplication' } } } }
-        '409': { $ref: '#/components/responses/Error' }
+        '401': { description: "UNAUTHORIZED — токен отсутствует, просрочен или невалиден", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '403': { description: "FORBIDDEN — роль не OPERATOR/ADMIN", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '404': { description: "NOT_FOUND — заявка не найдена", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '409': { description: "INVALID_TRANSITION — статус не MANUAL_REVIEW; CONFLICT — заявка уже взята другим оператором", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
   /operator/applications/{id}/decision:
     post:
       tags: [Operator]
-      summary: Решение оператора по MANUAL_REVIEW
+      summary: 'Решение оператора по MANUAL_REVIEW (оффер — monthly_payment_rub и valid_until считает сервер)'
       parameters:
+        - { $ref: '#/components/parameters/IfMatch' }
         - { $ref: '#/components/parameters/ApplicationId' }
       requestBody:
         required: true
@@ -312,9 +471,13 @@ paths:
             schema: { $ref: '#/components/schemas/OperatorDecisionRequest' }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/OperatorApplication' } } } }
-        '409': { $ref: '#/components/responses/Error' }
-        '422': { $ref: '#/components/responses/Error' }
+        '401': { description: "UNAUTHORIZED — токен отсутствует, просрочен или невалиден", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '403': { description: "FORBIDDEN — роль не OPERATOR/ADMIN", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '404': { description: "NOT_FOUND — заявка не найдена", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '409': { description: "INVALID_TRANSITION — статус не MANUAL_REVIEW; CONFLICT — заявка не взята этим оператором; VERSION_CONFLICT — заголовок If-Match не совпал с текущей version заявки", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '422': { description: "VALIDATION_ERROR — нет комментария; нет offer для OFFER/COUNTER_OFFER; нет reason_codes для REJECTED; нет items для NEEDS_INFO; условия вне лимитов продукта", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
   /health/live:
+    servers: [{ url: 'http://localhost:8000', description: Корень сервиса (без префикса /api/v1) }]
     get:
       tags: [System]
       security: []
@@ -322,6 +485,7 @@ paths:
       responses:
         '200': { description: OK }
   /health/ready:
+    servers: [{ url: 'http://localhost:8000', description: Корень сервиса (без префикса /api/v1) }]
     get:
       tags: [System]
       security: []
@@ -332,14 +496,29 @@ paths:
   /dev/reset-demo:
     post:
       tags: [System]
-      summary: Сбросить и перезагрузить демо-данные (только при DEMO_MODE=true, роль ADMIN)
+      summary: Сбросить и перезагрузить демо-данные (только DEMO_MODE=true, роль ADMIN; иначе 403 FORBIDDEN)
       responses:
         '204': { description: OK }
-        '403': { $ref: '#/components/responses/Error' }
+        '401': { description: "UNAUTHORIZED — токен отсутствует, просрочен или невалиден", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '403': { description: "FORBIDDEN — роль не ADMIN или DEMO_MODE=false", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
 components:
   securitySchemes:
     bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
   parameters:
+    IfMatch:
+      name: If-Match
+      in: header
+      required: false
+      description: Ожидаемая версия заявки в виде `"<version>"`. Если указан и не совпал с текущей — 409 VERSION_CONFLICT (изменение не применяется).
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    Offset:
+      name: offset
+      in: query
+      schema: { type: integer, minimum: 0, default: 0 }
     ApplicationId:
       name: id
       in: path
@@ -347,7 +526,9 @@ components:
       schema: { type: string, format: uuid }
   responses:
     Error:
-      description: Ошибка
+      description: Ошибка (заголовок X-Correlation-ID есть всегда)
+      headers:
+        X-Correlation-ID: { schema: { type: string } }
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -362,7 +543,7 @@ components:
           properties:
             code:
               type: string
-              enum: [VALIDATION_ERROR, UNAUTHORIZED, FORBIDDEN, NOT_FOUND, INVALID_TRANSITION, CONFLICT, PAYLOAD_TOO_LARGE, INTERNAL_ERROR]
+              enum: [VALIDATION_ERROR, UNAUTHORIZED, FORBIDDEN, NOT_FOUND, INVALID_TRANSITION, CONFLICT, VERSION_CONFLICT, IDEMPOTENCY_CONFLICT, PAYLOAD_TOO_LARGE, RATE_LIMITED, INTERNAL_ERROR]
             message: { type: string }
             details: { type: array, items: { type: object } }
     RegisterRequest:
@@ -406,6 +587,7 @@ components:
         max_term_months: { type: integer }
         base_rate_percent: { type: number }
         auto_limit_rub: { type: integer }
+        min_business_age_months: { type: integer, description: Минимальный возраст бизнеса (0 если ограничения нет) }
         required_documents: { type: array, items: { $ref: '#/components/schemas/DocType' } }
     RecommendRequest:
       type: object
@@ -444,9 +626,20 @@ components:
         amount_rub: { type: integer, minimum: 1 }
         term_months: { type: integer, minimum: 1 }
         purpose: { type: string, maxLength: 500 }
-        revenue_12m_rub: { type: integer }
-        net_profit_12m_rub: { type: integer }
-        existing_monthly_payments_rub: { type: integer, minimum: 0 }
+        revenue_12m_rub: { type: integer, format: int64 }
+        net_profit_12m_rub: { type: integer, format: int64 }
+        existing_monthly_payments_rub: { type: integer, format: int64, minimum: 0 }
+    ApplicationPatch:
+      type: object
+      minProperties: 1
+      properties:
+        product_code: { type: string, enum: [WORKING_CAPITAL, EQUIPMENT, EXPRESS] }
+        amount_rub: { type: integer, minimum: 1 }
+        term_months: { type: integer, minimum: 1 }
+        purpose: { type: string, maxLength: 500 }
+        revenue_12m_rub: { type: integer, format: int64 }
+        net_profit_12m_rub: { type: integer, format: int64 }
+        existing_monthly_payments_rub: { type: integer, format: int64, minimum: 0 }
     ApplicationStatus:
       type: string
       enum: [DRAFT, SUBMITTED, DATA_CHECK, NEEDS_INFO, ENRICHMENT, SCORING, MANUAL_REVIEW, OFFER, COUNTER_OFFER, ACCEPTED, SIGNING, DISBURSED, REJECTED, CANCELLED, EXPIRED]
@@ -469,12 +662,12 @@ components:
           properties:
             version: { type: integer }
             purpose: { type: string }
-            revenue_12m_rub: { type: integer }
-            net_profit_12m_rub: { type: integer }
-            existing_monthly_payments_rub: { type: integer }
+            revenue_12m_rub: { type: integer, format: int64 }
+            net_profit_12m_rub: { type: integer, format: int64 }
+            existing_monthly_payments_rub: { type: integer, format: int64 }
             status_title: { type: string, description: Заголовок статуса для клиента }
             status_description: { type: string, description: Пояснение, что происходит и что делать дальше }
-            next_action: { type: string, enum: [NONE, FILL_DRAFT, ANSWER_INFO_REQUEST, REVIEW_OFFER, SIGN] }
+            next_action: { type: string, enum: [NONE, FILL_DRAFT, ANSWER_INFO_REQUEST, REVIEW_OFFER, SIGN], description: 'SIGN только в статусе SIGNING; в ACCEPTED действий у клиента нет (NONE)' }
             reason_codes: { type: array, items: { type: string } }
             reason_messages: { type: array, items: { type: string } }
             expires_at: { type: string, format: date-time }
@@ -519,6 +712,7 @@ components:
               message: { type: string }
               doc_type: { $ref: '#/components/schemas/DocType' }
         requested_by: { type: string }
+        round: { type: integer, description: Номер раунда уточнений (с 1) }
         created_at: { type: string, format: date-time }
     InfoResponse:
       type: object
@@ -538,6 +732,7 @@ components:
         rate_percent: { type: number }
         monthly_payment_rub: { type: integer }
         valid_until: { type: string, format: date-time }
+        state: { type: string, enum: [ACTIVE, ACCEPTED, DECLINED, EXPIRED] }
         explanation: { type: string, description: Почему условия отличаются от запрошенных }
     FeedItem:
       type: object
@@ -579,9 +774,11 @@ components:
                 outcome: { type: string }
                 offer: { $ref: '#/components/schemas/Offer' }
             history: { type: array, items: { $ref: '#/components/schemas/StatusHistoryItem' } }
-            assigned_operator_id: { type: string }
+            assigned_operator_id: { type: string, format: uuid, nullable: true }
     OperatorDecisionRequest:
       type: object
+      description: |
+        Допустимо только из MANUAL_REVIEW и только для заявки, взятой этим оператором (иначе 409). Для REJECTED нужен минимум один `reason_codes`.
       required: [outcome, comment]
       properties:
         outcome: { type: string, enum: [OFFER, COUNTER_OFFER, NEEDS_INFO, REJECTED] }
