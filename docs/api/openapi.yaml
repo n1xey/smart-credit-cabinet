@@ -1,11 +1,20 @@
 openapi: 3.0.3
 info:
   title: Smart Credit Cabinet API
-  version: 0.1.0
+  version: 0.2.0
   description: |
     Контракт API кредитного конвейера для малого бизнеса (хакатон).
     Владелец: Участник 2. Изменения только отдельным PR с пометкой `contract`.
     Статусы и правила переходов: docs/STATE_MACHINE.md. Скоринг: docs/SCORING.md.
+
+    Общие правила:
+    - Все бизнес-ручки под префиксом `/api/v1`. Health-эндпоинты и `/docs` лежат на корне (`/health/live`, `/health/ready`, `/docs`).
+    - Заголовок `X-Correlation-ID`: принимается от клиента (опционально), иначе генерируется; всегда возвращается в ответе.
+    - `ETag` заявки = `"<version>"` (кавычки входят в значение). `If-None-Match` совпал -> 304.
+    - Клиент к чужой заявке/документу/офферу получает 404 (не 403).
+    - SSE: `GET /applications/{id}/events` читается через `fetch` со стримом и заголовком `Authorization`
+      (нативный `EventSource` не подходит; токен в query не передаём, чтобы он не попадал в логи).
+    - Пагинация списков: `limit` (1-100, по умолчанию 20) и `offset` (>= 0); общее число в заголовке `X-Total-Count`.
 servers:
   - url: http://localhost:8000/api/v1
     description: Локальный запуск через docker compose
@@ -33,8 +42,9 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/RegisterRequest' }
       responses:
-        '201': { description: Создан, content: { application/json: { schema: { $ref: '#/components/schemas/TokenResponse' } } } }
+        '201': { description: Создан (роль всегда CLIENT), content: { application/json: { schema: { $ref: '#/components/schemas/TokenResponse' } } } }
         '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
   /auth/login:
     post:
       tags: [Auth]
@@ -48,6 +58,8 @@ paths:
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/TokenResponse' } } } }
         '401': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
   /auth/me:
     get:
       tags: [Auth]
@@ -58,7 +70,8 @@ paths:
   /products:
     get:
       tags: [Catalog]
-      summary: Список кредитных продуктов
+      security: []
+      summary: Список кредитных продуктов (публичный)
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Product' } } } } }
   /products/recommend:
@@ -89,6 +102,7 @@ paths:
             schema: { $ref: '#/components/schemas/CompanyInput' }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Company' } } } }
+        '409': { description: ИНН уже закреплён за другим пользователем, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
         '422': { $ref: '#/components/responses/Error' }
   /company/lookup:
     get:
@@ -103,11 +117,13 @@ paths:
   /applications:
     get:
       tags: [Applications]
-      summary: Мои заявки
+      summary: Мои заявки (новые сверху)
       parameters:
         - { name: status, in: query, schema: { $ref: '#/components/schemas/ApplicationStatus' } }
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Offset' }
       responses:
-        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/ApplicationSummary' } } } } }
+        '200': { description: OK, headers: { X-Total-Count: { schema: { type: integer } } }, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/ApplicationSummary' } } } } }
     post:
       tags: [Applications]
       summary: Создать черновик заявки
@@ -133,30 +149,35 @@ paths:
         '404': { $ref: '#/components/responses/Error' }
     patch:
       tags: [Applications]
-      summary: Изменить черновик (только в статусе DRAFT)
+      summary: Частично изменить черновик (только в статусе DRAFT; иначе 409 INVALID_TRANSITION)
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/ApplicationInput' }
+            schema: { $ref: '#/components/schemas/ApplicationPatch' }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Application' } } } }
         '409': { $ref: '#/components/responses/Error' }
   /applications/{id}/submit:
     post:
       tags: [Applications]
-      summary: Подать заявку (идемпотентно)
+      summary: Подать заявку (DRAFT -> SUBMITTED, идемпотентно)
+      description: |
+        Повтор с тем же `Idempotency-Key` по той же заявке возвращает тот же ответ 202 без новых переходов.
+        Тот же ключ для другой заявки -> 409 IDEMPOTENCY_CONFLICT. Неполная заявка (нет компании, выручки,
+        прибыли, платежей, сумма/срок вне диапазона продукта) -> 422 VALIDATION_ERROR со списком полей в `details`.
       parameters:
         - { $ref: '#/components/parameters/ApplicationId' }
         - { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 8, maxLength: 100 } }
       responses:
         '202': { description: Принята в обработку, content: { application/json: { schema: { $ref: '#/components/schemas/Application' } } } }
+        '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/Error' }
   /applications/{id}/cancel:
     post:
       tags: [Applications]
-      summary: Отменить заявку
+      summary: Отменить заявку (допустимо из DRAFT, NEEDS_INFO, OFFER, COUNTER_OFFER; иначе 409 INVALID_TRANSITION)
       parameters:
         - { $ref: '#/components/parameters/ApplicationId' }
       responses:
@@ -173,7 +194,7 @@ paths:
   /applications/{id}/events:
     get:
       tags: [Applications]
-      summary: Поток событий статуса (Server-Sent Events)
+      summary: Поток событий статуса (Server-Sent Events; читать через fetch с Authorization; heartbeat-комментарий каждые 15 с)
       parameters:
         - { $ref: '#/components/parameters/ApplicationId' }
       responses:
@@ -192,7 +213,8 @@ paths:
         '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Document' } } } } }
     post:
       tags: [Documents]
-      summary: Загрузить документ
+      summary: Загрузить документ (только в статусах DRAFT и NEEDS_INFO; иначе 409 INVALID_TRANSITION)
+      description: Допустимые типы файлов (`DOC_ALLOWED_MIME`) и размер (`DOC_MAX_SIZE_MB`) задаются через env.
       requestBody:
         required: true
         content:
@@ -205,8 +227,19 @@ paths:
                 file: { type: string, format: binary }
       responses:
         '201': { description: Создан, content: { application/json: { schema: { $ref: '#/components/schemas/Document' } } } }
+        '409': { $ref: '#/components/responses/Error' }
         '413': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/Error' }
+  /applications/{id}/documents/{doc_id}/download:
+    get:
+      tags: [Documents]
+      summary: Скачать документ (владелец заявки или OPERATOR/ADMIN)
+      parameters:
+        - { $ref: '#/components/parameters/ApplicationId' }
+        - { name: doc_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Файл, content: { application/octet-stream: { schema: { type: string, format: binary } } } }
+        '404': { $ref: '#/components/responses/Error' }
   /applications/{id}/info-request:
     get:
       tags: [Applications]
@@ -218,7 +251,12 @@ paths:
         '404': { $ref: '#/components/responses/Error' }
     post:
       tags: [Applications]
-      summary: Ответить на запрос уточнений (переводит NEEDS_INFO → DATA_CHECK)
+      summary: Ответить на запрос уточнений (NEEDS_INFO → DATA_CHECK)
+      description: |
+        `corrected_fields` принимает только белый список: поля заявки (`amount_rub`, `term_months`, `purpose`,
+        `revenue_12m_rub`, `net_profit_12m_rub`, `existing_monthly_payments_rub`) и профиля (`name`, `okved`, `address`,
+        `registration_date`). Остальное -> 422. Недостающие документы загружаются через `/documents` до этого вызова.
+        Лимит раундов уточнений `MAX_INFO_ROUNDS` (по умолчанию 2); сверх лимита заявка уходит в MANUAL_REVIEW.
       parameters:
         - { $ref: '#/components/parameters/ApplicationId' }
       requestBody:
@@ -241,7 +279,7 @@ paths:
   /applications/{id}/offer/accept:
     post:
       tags: [Offer]
-      summary: Принять предложение (→ ACCEPTED → SIGNING)
+      summary: Принять предложение (OFFER/COUNTER_OFFER → ACCEPTED; воркер задачей `prepare_documents` переводит в SIGNING)
       parameters:
         - { $ref: '#/components/parameters/ApplicationId' }
       responses:
@@ -259,7 +297,7 @@ paths:
   /applications/{id}/sign:
     post:
       tags: [Offer]
-      summary: «Подписать» документы (имитация; SIGNING → DISBURSED)
+      summary: «Подписать» документы (имитация; SIGNING → DISBURSED, актор CLIENT)
       parameters:
         - { $ref: '#/components/parameters/ApplicationId' }
       responses:
@@ -278,8 +316,16 @@ paths:
       parameters:
         - { name: status, in: query, schema: { $ref: '#/components/schemas/ApplicationStatus' } }
         - { name: assigned_to_me, in: query, schema: { type: boolean } }
+        - { name: product_code, in: query, schema: { type: string, enum: [WORKING_CAPITAL, EQUIPMENT, EXPRESS] } }
+        - { name: amount_from, in: query, schema: { type: integer } }
+        - { name: amount_to, in: query, schema: { type: integer } }
+        - { name: q, in: query, description: Поиск по ИНН или названию компании, schema: { type: string, maxLength: 100 } }
+        - { name: sort, in: query, schema: { type: string, enum: [updated_at_desc, updated_at_asc, amount_desc, amount_asc], default: updated_at_desc } }
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Offset' }
       responses:
-        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/ApplicationSummary' } } } } }
+        '200': { description: OK, headers: { X-Total-Count: { schema: { type: integer } } }, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/ApplicationSummary' } } } } }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
   /operator/applications/{id}:
     get:
@@ -293,7 +339,7 @@ paths:
   /operator/applications/{id}/take:
     post:
       tags: [Operator]
-      summary: Взять заявку в работу
+      summary: Взять заявку в работу (только MANUAL_REVIEW; статус не меняется, пишется аудит-событие; занята другим -> 409 CONFLICT)
       parameters:
         - { $ref: '#/components/parameters/ApplicationId' }
       responses:
@@ -302,7 +348,7 @@ paths:
   /operator/applications/{id}/decision:
     post:
       tags: [Operator]
-      summary: Решение оператора по MANUAL_REVIEW
+      summary: 'Решение оператора по MANUAL_REVIEW (оффер — monthly_payment_rub и valid_until считает сервер)'
       parameters:
         - { $ref: '#/components/parameters/ApplicationId' }
       requestBody:
@@ -315,6 +361,7 @@ paths:
         '409': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/Error' }
   /health/live:
+    servers: [{ url: 'http://localhost:8000', description: Корень сервиса (без префикса /api/v1) }]
     get:
       tags: [System]
       security: []
@@ -322,6 +369,7 @@ paths:
       responses:
         '200': { description: OK }
   /health/ready:
+    servers: [{ url: 'http://localhost:8000', description: Корень сервиса (без префикса /api/v1) }]
     get:
       tags: [System]
       security: []
@@ -332,7 +380,7 @@ paths:
   /dev/reset-demo:
     post:
       tags: [System]
-      summary: Сбросить и перезагрузить демо-данные (только при DEMO_MODE=true, роль ADMIN)
+      summary: Сбросить и перезагрузить демо-данные (только DEMO_MODE=true, роль ADMIN; иначе 403 FORBIDDEN)
       responses:
         '204': { description: OK }
         '403': { $ref: '#/components/responses/Error' }
@@ -340,6 +388,14 @@ components:
   securitySchemes:
     bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
   parameters:
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    Offset:
+      name: offset
+      in: query
+      schema: { type: integer, minimum: 0, default: 0 }
     ApplicationId:
       name: id
       in: path
@@ -347,7 +403,9 @@ components:
       schema: { type: string, format: uuid }
   responses:
     Error:
-      description: Ошибка
+      description: Ошибка (заголовок X-Correlation-ID есть всегда)
+      headers:
+        X-Correlation-ID: { schema: { type: string } }
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -362,7 +420,7 @@ components:
           properties:
             code:
               type: string
-              enum: [VALIDATION_ERROR, UNAUTHORIZED, FORBIDDEN, NOT_FOUND, INVALID_TRANSITION, CONFLICT, PAYLOAD_TOO_LARGE, INTERNAL_ERROR]
+              enum: [VALIDATION_ERROR, UNAUTHORIZED, FORBIDDEN, NOT_FOUND, INVALID_TRANSITION, CONFLICT, VERSION_CONFLICT, IDEMPOTENCY_CONFLICT, PAYLOAD_TOO_LARGE, RATE_LIMITED, INTERNAL_ERROR]
             message: { type: string }
             details: { type: array, items: { type: object } }
     RegisterRequest:
@@ -406,6 +464,7 @@ components:
         max_term_months: { type: integer }
         base_rate_percent: { type: number }
         auto_limit_rub: { type: integer }
+        min_business_age_months: { type: integer, description: Минимальный возраст бизнеса (0 если ограничения нет) }
         required_documents: { type: array, items: { $ref: '#/components/schemas/DocType' } }
     RecommendRequest:
       type: object
@@ -444,9 +503,20 @@ components:
         amount_rub: { type: integer, minimum: 1 }
         term_months: { type: integer, minimum: 1 }
         purpose: { type: string, maxLength: 500 }
-        revenue_12m_rub: { type: integer }
-        net_profit_12m_rub: { type: integer }
-        existing_monthly_payments_rub: { type: integer, minimum: 0 }
+        revenue_12m_rub: { type: integer, format: int64 }
+        net_profit_12m_rub: { type: integer, format: int64 }
+        existing_monthly_payments_rub: { type: integer, format: int64, minimum: 0 }
+    ApplicationPatch:
+      type: object
+      minProperties: 1
+      properties:
+        product_code: { type: string, enum: [WORKING_CAPITAL, EQUIPMENT, EXPRESS] }
+        amount_rub: { type: integer, minimum: 1 }
+        term_months: { type: integer, minimum: 1 }
+        purpose: { type: string, maxLength: 500 }
+        revenue_12m_rub: { type: integer, format: int64 }
+        net_profit_12m_rub: { type: integer, format: int64 }
+        existing_monthly_payments_rub: { type: integer, format: int64, minimum: 0 }
     ApplicationStatus:
       type: string
       enum: [DRAFT, SUBMITTED, DATA_CHECK, NEEDS_INFO, ENRICHMENT, SCORING, MANUAL_REVIEW, OFFER, COUNTER_OFFER, ACCEPTED, SIGNING, DISBURSED, REJECTED, CANCELLED, EXPIRED]
@@ -469,9 +539,9 @@ components:
           properties:
             version: { type: integer }
             purpose: { type: string }
-            revenue_12m_rub: { type: integer }
-            net_profit_12m_rub: { type: integer }
-            existing_monthly_payments_rub: { type: integer }
+            revenue_12m_rub: { type: integer, format: int64 }
+            net_profit_12m_rub: { type: integer, format: int64 }
+            existing_monthly_payments_rub: { type: integer, format: int64 }
             status_title: { type: string, description: Заголовок статуса для клиента }
             status_description: { type: string, description: Пояснение, что происходит и что делать дальше }
             next_action: { type: string, enum: [NONE, FILL_DRAFT, ANSWER_INFO_REQUEST, REVIEW_OFFER, SIGN] }
@@ -519,6 +589,7 @@ components:
               message: { type: string }
               doc_type: { $ref: '#/components/schemas/DocType' }
         requested_by: { type: string }
+        round: { type: integer, description: Номер раунда уточнений (с 1) }
         created_at: { type: string, format: date-time }
     InfoResponse:
       type: object
@@ -538,6 +609,7 @@ components:
         rate_percent: { type: number }
         monthly_payment_rub: { type: integer }
         valid_until: { type: string, format: date-time }
+        state: { type: string, enum: [ACTIVE, ACCEPTED, DECLINED, EXPIRED] }
         explanation: { type: string, description: Почему условия отличаются от запрошенных }
     FeedItem:
       type: object
@@ -579,9 +651,11 @@ components:
                 outcome: { type: string }
                 offer: { $ref: '#/components/schemas/Offer' }
             history: { type: array, items: { $ref: '#/components/schemas/StatusHistoryItem' } }
-            assigned_operator_id: { type: string }
+            assigned_operator_id: { type: string, format: uuid, nullable: true }
     OperatorDecisionRequest:
       type: object
+      description: |
+        Допустимо только из MANUAL_REVIEW и только для заявки, взятой этим оператором (иначе 409). Для REJECTED нужен минимум один `reason_codes`.
       required: [outcome, comment]
       properties:
         outcome: { type: string, enum: [OFFER, COUNTER_OFFER, NEEDS_INFO, REJECTED] }
