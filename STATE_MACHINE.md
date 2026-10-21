@@ -33,7 +33,7 @@ stateDiagram-v2
     COUNTER_OFFER --> CANCELLED: клиент отказался
     OFFER --> EXPIRED: срок оффера истёк
     COUNTER_OFFER --> EXPIRED: срок оффера истёк
-    ACCEPTED --> SIGNING: система формирует документы
+    ACCEPTED --> SIGNING: воркер, задача prepare_documents
     SIGNING --> DISBURSED: клиент «подписал» (имитация)
     SIGNING --> EXPIRED: срок подписания истёк
     REJECTED --> [*]
@@ -56,7 +56,7 @@ stateDiagram-v2
 | `OFFER` | Предложение на запрошенных условиях | Банк одобрил заявку, посмотрите условия | клиент |
 | `COUNTER_OFFER` | Предложение других условий | Банк готов предложить другие условия | клиент |
 | `ACCEPTED` | Клиент принял | Условия приняты, готовим документы | воркер (задача `prepare_documents` → `SIGNING`) |
-| `SIGNING` | Подписание (имитация) | Подпишите документы | клиент |
+| `SIGNING` | Подписание (имитация) | Подпишите документы | клиент (`/sign`); сам статус выставляет воркер |
 | `DISBURSED` | Выдача (имитация) | Средства выданы (демо) | клиент (`/sign`), актор перехода `CLIENT` |
 | `REJECTED` | Отказ | Банк не может одобрить заявку. Причины ниже | финал |
 | `CANCELLED` | Отмена клиентом | Заявка отменена | финал |
@@ -75,10 +75,23 @@ stateDiagram-v2
 7. Цикл уточнений ограничен `MAX_INFO_ROUNDS` (по умолчанию 2). При повторном входе в `DATA_CHECK` из `NEEDS_INFO` уже полученные `enrichment_results` со статусом `OK` переиспользуются, источники повторно не опрашиваются. Если лимит раундов исчерпан, заявка уходит в `MANUAL_REVIEW` (причина `INFO_ROUNDS_EXCEEDED`).
 8. Отмена клиентом допустима только из `DRAFT`, `NEEDS_INFO`, `OFFER`, `COUNTER_OFFER`; из остальных статусов `409 INVALID_TRANSITION`.
 9. `take` (взять в работу) статус не меняет: пишется аудит-событие и `assigned_operator_id`; заявку, занятую другим оператором, взять нельзя (`409 CONFLICT`). Решение принимает только назначенный оператор.
-10. `accept` выполняет `OFFER|COUNTER_OFFER → ACCEPTED` (актор `CLIENT`) и ставит задачу `prepare_documents`; воркер переводит `ACCEPTED → SIGNING` (актор `SYSTEM`).
+10. Цепочка после оффера — см. раздел «Цепочка после оффера» ниже (единое правило, остальные места только ссылаются на него).
 11. `expires_at` зависит от статуса: `NEEDS_INFO` → +`NEEDS_INFO_TTL_HOURS`, `OFFER`/`COUNTER_OFFER` → `valid_until` оффера, `SIGNING` → +`SIGNING_TTL_HOURS`; в остальных статусах `null`.
 12. Зависшие задачи: воркер возвращает в `PENDING` задачи `RUNNING` с `locked_at` старше `JOB_LOCK_TIMEOUT_SEC`; заявка в `DATA_CHECK`/`ENRICHMENT`/`SCORING` без активной задачи пересоздаёт её (watchdog).
 13. Из финальных статусов (`REJECTED`, `CANCELLED`, `EXPIRED`, `DISBURSED`) переходов нет. Новая попытка — новая заявка (можно «повторить заявку» копированием данных).
+
+## Цепочка после оффера (единое правило)
+
+| Шаг | Что происходит | Актор | Источник | Итоговый статус |
+|---|---|---|---|---|
+| 1 | Клиент принимает оффер | `CLIENT` | `POST /offer/accept`; в той же транзакции ставится задача `prepare_documents` | `ACCEPTED` |
+| 2 | Воркер «формирует документы» (имитация) | `SYSTEM` | задача `prepare_documents` | `SIGNING` |
+| 3 | Клиент «подписывает» | `CLIENT` | `POST /sign`, допустим только в `SIGNING` | `DISBURSED` |
+
+- Ответ `accept` содержит заявку в статусе `ACCEPTED`, а не `SIGNING`. Клиент видит переход в `SIGNING` через SSE или опрос.
+- В `ACCEPTED` у клиента нет действий (`next_action = NONE`); `sign` в этом статусе — `409 INVALID_TRANSITION`.
+- Если `prepare_documents` не выполнена (сбой воркера), задача повторяется по правилам повторов; заявка не зависает (watchdog, правило 12).
+- `expires_at` в `SIGNING` = момент входа в статус + `SIGNING_TTL_HOURS`; истечение → `EXPIRED`.
 
 ## События для интерфейса
 Клиент узнаёт об изменении через `GET /applications/{id}/events` (SSE, читается через `fetch` с заголовком `Authorization`, heartbeat каждые 15 с) с запасным вариантом: опрос `GET /applications/{id}` с `ETag`/`If-None-Match` каждые 2–3 секунды. `ETag` = `"<version>"`; `version` растёт при каждом изменении заявки, включая смену статуса. Событие: `{ "application_id", "status", "updated_at", "version" }`.
