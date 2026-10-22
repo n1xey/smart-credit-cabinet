@@ -1,6 +1,6 @@
-import { StrictMode } from 'react';
+import { StrictMode, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { BrowserRouter, Routes, Route, Navigate, Link, NavLink, Outlet } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, Link, NavLink, Outlet, useNavigate } from 'react-router-dom';
 import '@alfalab/core-components-vars/colors-bluetint.css';
 import '@alfalab/core-components-vars/shadows-bluetint.css';
 import '@alfalab/core-components-vars/border-radius.css';
@@ -10,8 +10,8 @@ import './styles.css';
 import { Button } from '@alfalab/core-components-button';
 import { Typography } from '@alfalab/core-components-typography';
 import { AuthProvider, useAuth } from './auth';
-import { Role, api } from './api/client';
-import { Loading } from './pages/shared';
+import { Role, api, ApiError, MOCK } from './api/client';
+import { ErrorPlate, Loading } from './pages/shared';
 import Login from './pages/Login';
 import Company from './pages/Company';
 import Wizard from './pages/Wizard';
@@ -44,15 +44,19 @@ function Layout() {
   </>;
 }
 function DemoPanel() {
-  const { login } = useAuth();
-  const go = (e: string) => login(e, 'Demo12345!').then(() => (location.href = '/'));
-  return <footer className="demo"><details className="card"><summary>Демо-панель</summary>
+  const { login } = useAuth(); const navigate = useNavigate(); const [err, setErr] = useState('');
+  const enter = async (e: string) => { setErr(''); const u = await login(e, 'Demo12345!'); return u; };
+  const go = (e: string) => enter(e).then(u => navigate(u.role === 'CLIENT' ? '/' : '/operator')).catch(explain);
+  const reset = () => enter('admin@demo.local').then(() => api('/dev/reset-demo', { method: 'POST' })).then(() => (location.href = '/operator')).catch(explain);
+  const explain = (x: ApiError) => setErr(x.status === 401 ? 'Демо-учёток на сервере нет: seed ещё не загружен. Чтобы посмотреть интерфейс без бэкенда, запустите frontend командой «npm run demo».'
+    : x.status === 0 ? 'Сервер не отвечает. Запустите бэкенд или frontend в демо-режиме: «npm run demo».' : x.message);
+  return <footer className="demo"><details className="card" open={MOCK}><summary>Демо-панель{MOCK && ' · встроенные демо-данные, без бэкенда'}</summary>
     <div className="row" style={{ marginTop: 12 }}>
       {[1, 2, 3, 4, 5, 6, 7].map(n => <Button key={n} view="secondary" size={32} onClick={() => go(`client${n}@demo.local`)}>Клиент {n}</Button>)}
       <Button view="secondary" size={32} onClick={() => go('operator@demo.local')}>Оператор</Button>
       <Button view="secondary" size={32} onClick={() => go('admin@demo.local')}>Админ</Button>
-      <Button view="outlined" size={32} onClick={() => go('admin@demo.local').then(() => api('/dev/reset-demo', { method: 'POST' }))}>Сбросить демо-данные</Button>
-    </div></details></footer>;
+      <Button view="outlined" size={32} onClick={reset}>Сбросить демо-данные</Button>
+    </div>{err && <div style={{ marginTop: 12 }}><ErrorPlate text={err} /></div>}</details></footer>;
 }
 createRoot(document.getElementById('root')!).render(<StrictMode><BrowserRouter><AuthProvider><Routes>
   <Route element={<Layout />}>

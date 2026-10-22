@@ -1,5 +1,9 @@
 // Тонкая обёртка над fetch. Типы схем: npm run gen:api -> src/api/schema.d.ts (openapi-typescript).
 const BASE: string = import.meta.env.VITE_API_URL || '/api/v1';
+// VITE_API_URL=mock — встроенный демо-мок без бэкенда (src/api/mock.ts); в обычную сборку он не попадает
+export const MOCK = BASE === 'mock';
+export const http = (url: string, init?: RequestInit): Promise<Response> => MOCK ? import('./mock').then(m => m.mockFetch(url, init)) : fetch(url, init);
+export const API_BASE = BASE;
 export type Role = 'CLIENT' | 'OPERATOR' | 'ADMIN';
 export interface User { id: string; email: string; full_name?: string; role: Role }
 export interface Product { code: string; name: string; description?: string; min_amount_rub: number; max_amount_rub: number; min_term_months: number; max_term_months: number; base_rate_percent: number; auto_limit_rub?: number; required_documents: string[] }
@@ -21,7 +25,7 @@ export async function api<T>(path: string, init: RequestInit & { json?: unknown 
   let body = init.body;
   if (init.json !== undefined) { headers.set('Content-Type', 'application/json'); body = JSON.stringify(init.json); }
   let res: Response;
-  try { res = await fetch(BASE + path, { ...init, headers, body }); }
+  try { res = await http(BASE + path, { ...init, headers, body }); }
   catch { throw new ApiError(0, 'NETWORK', 'Нет связи с сервером. Проверьте подключение и попробуйте ещё раз.'); }
   if (res.status === 204) return undefined as T;
   const data = await res.json().catch(() => null);
