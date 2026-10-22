@@ -27,7 +27,7 @@ export default function Wizard() {
   const [err, setErr] = useState(''); const [busy, setBusy] = useState(false);
   useEffect(() => { api<Product[]>('/products').then(setProducts).catch(e => setErr(e.message)); }, []);
   const p = products.find(x => x.code === code);
-  const pick = (c: string) => { const pr = products.find(x => x.code === c)!; setCode(c); setAmount(Math.min(Math.max(amount, pr.min_amount_rub), pr.max_amount_rub)); setTerm(Math.min(Math.max(term, pr.min_term_months), pr.max_term_months)); };
+  const pick = (c: string) => { const pr = products.find(x => x.code === c); if (!pr) return; setCode(c); setAmount(Math.min(Math.max(amount, pr.min_amount_rub), pr.max_amount_rub)); setTerm(Math.min(Math.max(term, pr.min_term_months), pr.max_term_months)); };
   const recommend = async (k: string) => { setPurpose(k); try { const r = await api<any>('/products/recommend', { method: 'POST', json: { purpose: k } }); setRec(r); pick(r.product_code); } catch (e: any) { setErr(e.message); } };
   const body = () => ({ product_code: code, amount_rub: amount, term_months: term, purpose: fin.purpose || undefined,
     revenue_12m_rub: fin.revenue_12m_rub ? +fin.revenue_12m_rub : undefined, net_profit_12m_rub: fin.net_profit_12m_rub ? +fin.net_profit_12m_rub : undefined, existing_monthly_payments_rub: +fin.existing_monthly_payments_rub || 0 });
