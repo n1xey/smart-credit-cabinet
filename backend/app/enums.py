@@ -1,0 +1,78 @@
+"""Перечисления из контракта (docs/STATE_MACHINE.md, docs/DATA_MODEL.md). Новых значений не изобретаем."""
+from enum import StrEnum
+
+
+class ApplicationStatus(StrEnum):
+    DRAFT = "DRAFT"
+    SUBMITTED = "SUBMITTED"
+    DATA_CHECK = "DATA_CHECK"
+    NEEDS_INFO = "NEEDS_INFO"
+    ENRICHMENT = "ENRICHMENT"
+    SCORING = "SCORING"
+    MANUAL_REVIEW = "MANUAL_REVIEW"
+    OFFER = "OFFER"
+    COUNTER_OFFER = "COUNTER_OFFER"
+    ACCEPTED = "ACCEPTED"
+    SIGNING = "SIGNING"
+    DISBURSED = "DISBURSED"
+    REJECTED = "REJECTED"
+    CANCELLED = "CANCELLED"
+    EXPIRED = "EXPIRED"
+
+
+class Role(StrEnum):
+    CLIENT = "CLIENT"
+    OPERATOR = "OPERATOR"
+    ADMIN = "ADMIN"
+
+
+class ActorType(StrEnum):
+    CLIENT = "CLIENT"
+    OPERATOR = "OPERATOR"
+    SYSTEM = "SYSTEM"
+
+
+class LegalForm(StrEnum):
+    OOO = "OOO"
+    IP = "IP"
+
+
+class JobState(StrEnum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    DONE = "DONE"
+    FAILED = "FAILED"
+
+
+class OfferState(StrEnum):
+    ACTIVE = "ACTIVE"
+    ACCEPTED = "ACCEPTED"
+    DECLINED = "DECLINED"
+    EXPIRED = "EXPIRED"
+
+
+class OfferKind(StrEnum):
+    ORIGINAL = "ORIGINAL"
+    COUNTER = "COUNTER"
+
+
+class Outcome(StrEnum):
+    OFFER = "OFFER"
+    COUNTER_OFFER = "COUNTER_OFFER"
+    MANUAL_REVIEW = "MANUAL_REVIEW"
+    NEEDS_INFO = "NEEDS_INFO"
+    REJECTED = "REJECTED"
+
+
+class ErrorCode(StrEnum):
+    VALIDATION_ERROR = "VALIDATION_ERROR"
+    UNAUTHORIZED = "UNAUTHORIZED"
+    FORBIDDEN = "FORBIDDEN"
+    NOT_FOUND = "NOT_FOUND"
+    INVALID_TRANSITION = "INVALID_TRANSITION"
+    CONFLICT = "CONFLICT"
+    VERSION_CONFLICT = "VERSION_CONFLICT"
+    IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT"
+    PAYLOAD_TOO_LARGE = "PAYLOAD_TOO_LARGE"
+    RATE_LIMITED = "RATE_LIMITED"
+    INTERNAL_ERROR = "INTERNAL_ERROR"
