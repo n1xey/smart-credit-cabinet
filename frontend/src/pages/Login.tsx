@@ -4,7 +4,7 @@ import { Button } from '@alfalab/core-components-button';
 import { Input } from '@alfalab/core-components-input';
 import { Gap } from '@alfalab/core-components-gap';
 import { useAuth } from '../auth';
-import { api, setToken } from '../api/client';
+import { api, errorText, setToken } from '../api/client';
 import { ErrorPlate, H1, Hint } from './shared';
 export default function Login() {
   const { login } = useAuth(); const nav = useNavigate();
@@ -15,7 +15,7 @@ export default function Login() {
     try {
       if (mode === 'up') await api('/auth/register', { method: 'POST', json: f }).then((r: any) => setToken(r.access_token));
       const u = await login(f.email, f.password); nav(u.role === 'CLIENT' ? '/' : '/operator');
-    } catch (x: any) { setErr(x.message); } finally { setBusy(false); }
+    } catch (x) { setErr(errorText(x)); } finally { setBusy(false); }
   };
   const set = (k: string) => (_: unknown, { value }: { value: string }) => setF({ ...f, [k]: value });
   return <form className="card center" onSubmit={submit}>
