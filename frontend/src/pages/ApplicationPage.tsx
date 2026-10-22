@@ -6,7 +6,7 @@ import { Textarea } from '@alfalab/core-components-textarea';
 import { Attach } from '@alfalab/core-components-attach';
 import { Typography } from '@alfalab/core-components-typography';
 import { Gap } from '@alfalab/core-components-gap';
-import { api, Application, HistoryItem, Offer, dt, money, sseUrl } from '../api/client';
+import { api, http, API_BASE, MOCK, getToken, Application, HistoryItem, Offer, dt, money, sseUrl } from '../api/client';
 import { StatusBadge, FINAL_BAD, ErrorPlate, H2, Hint, Loading, LABEL } from './shared';
 const TERMINAL = ['REJECTED', 'CANCELLED', 'EXPIRED', 'DISBURSED'];
 const Big = ({ children }: { children: React.ReactNode }) => <Typography.Text view="primary-large" weight="bold" tag="div">{children}</Typography.Text>;
@@ -16,14 +16,14 @@ export default function ApplicationPage() {
   const refresh = useCallback(async () => { // опрос с If-None-Match: запасной вариант к SSE
     try {
       const h: Record<string, string> = etag.current ? { 'If-None-Match': etag.current } : {};
-      const res = await fetch(`${import.meta.env.VITE_API_URL || '/api/v1'}/applications/${id}`, { headers: { ...h, Authorization: `Bearer ${sessionStorage.getItem('token')}` } });
+      const res = await http(`${API_BASE}/applications/${id}`, { headers: { ...h, Authorization: `Bearer ${getToken()}` } });
       if (res.status === 304) return; if (!res.ok) throw new Error('Не удалось загрузить заявку');
       etag.current = res.headers.get('ETag'); setA(await res.json()); setHist(await api<HistoryItem[]>(`/applications/${id}/history`));
     } catch (e: any) { setErr(e.message); }
   }, [id]);
   useEffect(() => {
     refresh(); const t = setInterval(refresh, 3000);
-    let es: EventSource | undefined; try { es = new EventSource(sseUrl(id!)); es.onmessage = () => { etag.current = null; refresh(); }; es.onerror = () => es?.close(); } catch { /* остаётся опрос */ }
+    let es: EventSource | undefined; if (!MOCK) try { es = new EventSource(sseUrl(id!)); es.onmessage = () => { etag.current = null; refresh(); }; es.onerror = () => es?.close(); } catch { /* остаётся опрос */ }
     return () => { clearInterval(t); es?.close(); };
   }, [id, refresh]);
   if (!a) return err ? <ErrorPlate text={err} /> : <Loading />;

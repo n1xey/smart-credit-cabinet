@@ -1,7 +1,9 @@
 # frontend (Участник 3)
 React 18 + Vite + TypeScript. Без внешних CDN и шрифтов.
 - `npm install` (создаст package-lock.json — закоммитить), `npm run dev` (порт 5173, /api проксируется на :8000)
-- Mock без бэкенда: `npm run mock` (Prism на :4010), затем `VITE_API_URL=http://localhost:4010 npm run dev`
+- **Посмотреть интерфейс без бэкенда:** `npm run demo` → http://localhost:5173. Встроенный мок (`src/api/mock.ts`, включается `VITE_API_URL=mock` из `.env.demo`) с синтетическими компаниями из `docs/SCORING.md`. Войти — кнопками в демо-панели внизу или `client1@demo.local` … `client7@demo.local`, `operator@demo.local` / `Demo12345!`. Заявки двигаются по статусам сами, можно пройти весь путь до «Средства выданы». Данные живут в памяти вкладки, перезагрузка страницы их сбрасывает. Исходы в моке упрощены и к скорингу продукта отношения не имеют.
+- Mock по контракту: `npm run mock` (Prism на :4010), затем `VITE_API_URL=http://localhost:4010 npm run dev` — ответы-заглушки (`"string"`, нули), годится для проверки формата, не для показа.
+- Демо-панель с реальным бэкендом работает, только когда загружен seed с демо-учётками; без него панель покажет подсказку.
 - Типы из контракта: `npm run gen:api` (после contract-PR Кирилла)
 - Docker: `docker build -t alfa-frontend .` — nginx раздаёт статику и проксирует /api на сервис `backend:8000`
 - Переменные: см. `.env.example` (VITE_API_URL, VITE_DEMO_MODE)
