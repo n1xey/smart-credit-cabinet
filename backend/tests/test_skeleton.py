@@ -76,26 +76,26 @@ def test_correlation_id_middleware_handles_missing_headers_key():
     assert b"x-correlation-id" in header_dict
 
 
-def test_settings_jwt_secret_security():
+def test_settings_jwt_secret_security(monkeypatch):
     import pytest
+    from pydantic import ValidationError
     from app.config import Settings
 
-    # Dev/test without setting secret gets secure random string
-    s_dev = Settings(app_env="dev")
-    assert len(s_dev.jwt_secret) >= 32
-    assert s_dev.jwt_secret != "change-me-in-env"
+    # Без JWT_SECRET в env Settings падает с ValidationError при запуске
+    monkeypatch.delenv("JWT_SECRET", raising=False)
+    with pytest.raises(ValidationError):
+        Settings()
 
-    # Dev with placeholder gets automatically replaced with strong random secret
-    s_dev_placeholder = Settings(app_env="dev", jwt_secret="change-me-in-env")
-    assert len(s_dev_placeholder.jwt_secret) >= 32
-    assert s_dev_placeholder.jwt_secret != "change-me-in-env"
+    # Секрет короче 16 символов падает с ValidationError
+    with pytest.raises(ValidationError):
+        Settings(jwt_secret="short")
 
-    # Prod with placeholder or short secret raises ValueError
+    # Prod с placeholder "change-me-in-env" или коротким (<32) секретом падает с ошибкой
     with pytest.raises(ValueError, match="JWT_SECRET must be securely configured"):
         Settings(app_env="prod", jwt_secret="change-me-in-env")
 
     with pytest.raises(ValueError, match="JWT_SECRET must be securely configured"):
-        Settings(app_env="prod", jwt_secret="too-short")
+        Settings(app_env="prod", jwt_secret="short-prod-secret-16")
 
 
 # ---------- формат ошибок ----------

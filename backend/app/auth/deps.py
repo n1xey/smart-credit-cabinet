@@ -32,13 +32,19 @@ def get_current_user(
         )
     try:
         payload = decode_token(credentials.credentials)
-    except ValueError:
+        sub = payload["sub"]
+        role = payload["role"]
+        email = payload["email"]
+        user_id = uuid.UUID(sub)
+        if not isinstance(role, str) or not isinstance(email, str):
+            raise TypeError("role and email must be strings")
+    except (ValueError, KeyError, TypeError):
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
     return TokenData(
-        user_id=uuid.UUID(payload["sub"]),
-        role=payload["role"],
-        email=payload["email"],
+        user_id=user_id,
+        role=role,
+        email=email,
     )
 
 

@@ -6,7 +6,11 @@ SQLite не поддерживает JSONB и PostgreSQL-специфичные 
 поэтому для тестовой схемы используем отдельный MetaData с JSON вместо JSONB
 и без CHECK-ограничений.
 """
+import os
 import uuid
+
+# Для тестов устанавливаем дефолтный JWT_SECRET, чтобы тесты не зависели от внешнего окружения
+os.environ.setdefault("JWT_SECRET", "test-secret-key-with-at-least-32-characters-for-safety")
 
 import pytest
 from fastapi.testclient import TestClient
