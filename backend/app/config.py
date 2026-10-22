@@ -1,7 +1,8 @@
+import secrets
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -19,7 +20,7 @@ class Settings(BaseSettings):
     openapi_path: Path = Field(default=_REPO_ROOT / "docs" / "api" / "openapi.yaml")
 
     # auth
-    jwt_secret: str = "change-me-in-env"
+    jwt_secret: str = Field(default_factory=lambda: secrets.token_urlsafe(32))
     jwt_ttl_minutes: int = 60
     login_rate_limit_per_minute: int = 10
 
@@ -39,6 +40,26 @@ class Settings(BaseSettings):
     bki_url: str = "http://mock-bki:8001"
     egrul_url: str = "http://mock-egrul:8002"
     ai_enabled: bool = False
+
+    @model_validator(mode="after")
+    def validate_security_and_critical_settings(self) -> "Settings":
+        is_prod = self.app_env.lower() in ("prod", "production", "stage", "staging")
+        if is_prod:
+            if not self.jwt_secret or self.jwt_secret == "change-me-in-env" or len(self.jwt_secret) < 32:
+                raise ValueError(
+                    "JWT_SECRET must be securely configured via environment variable in production "
+                    "(minimum 32 characters, not default placeholder)"
+                )
+        else:
+            if self.jwt_secret == "change-me-in-env":
+                self.jwt_secret = secrets.token_urlsafe(32)
+
+        if self.jwt_ttl_minutes <= 0:
+            raise ValueError("jwt_ttl_minutes must be positive")
+        if self.login_rate_limit_per_minute <= 0:
+            raise ValueError("login_rate_limit_per_minute must be positive")
+
+        return self
 
 
 @lru_cache

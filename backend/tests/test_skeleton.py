@@ -48,6 +48,56 @@ def test_correlation_id_invalid_replaced(client):
     assert r.headers["X-Correlation-ID"] != "bad id with spaces!"
 
 
+def test_correlation_id_middleware_handles_missing_headers_key():
+    import pytest
+    from app.middleware import CorrelationIdMiddleware
+
+    async def raw_asgi_app(scope, receive, send):
+        # Simulates an ASGI app returning http.response.start without 'headers' key
+        await send({"type": "http.response.start", "status": 204})
+        await send({"type": "http.response.body", "body": b""})
+
+    middleware = CorrelationIdMiddleware(raw_asgi_app)
+    sent_messages = []
+
+    async def mock_send(msg):
+        sent_messages.append(msg)
+
+    async def run_asgi():
+        scope = {"type": "http", "method": "GET", "path": "/test", "headers": []}
+        await middleware(scope, None, mock_send)
+
+    import anyio
+    anyio.run(run_asgi)
+
+    start_msg = sent_messages[0]
+    assert start_msg["type"] == "http.response.start"
+    header_dict = dict(start_msg["headers"])
+    assert b"x-correlation-id" in header_dict
+
+
+def test_settings_jwt_secret_security():
+    import pytest
+    from app.config import Settings
+
+    # Dev/test without setting secret gets secure random string
+    s_dev = Settings(app_env="dev")
+    assert len(s_dev.jwt_secret) >= 32
+    assert s_dev.jwt_secret != "change-me-in-env"
+
+    # Dev with placeholder gets automatically replaced with strong random secret
+    s_dev_placeholder = Settings(app_env="dev", jwt_secret="change-me-in-env")
+    assert len(s_dev_placeholder.jwt_secret) >= 32
+    assert s_dev_placeholder.jwt_secret != "change-me-in-env"
+
+    # Prod with placeholder or short secret raises ValueError
+    with pytest.raises(ValueError, match="JWT_SECRET must be securely configured"):
+        Settings(app_env="prod", jwt_secret="change-me-in-env")
+
+    with pytest.raises(ValueError, match="JWT_SECRET must be securely configured"):
+        Settings(app_env="prod", jwt_secret="too-short")
+
+
 # ---------- формат ошибок ----------
 def test_404_format(client):
     r = client.get("/nope")
