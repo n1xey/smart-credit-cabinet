@@ -7,7 +7,7 @@ GET  /auth/me       — требует Bearer-токен, возвращает U
 import logging
 
 from fastapi import APIRouter, Depends, Request, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -24,7 +24,7 @@ from app.models.tables import User
 log = logging.getLogger("app.api.auth")
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
-# Rate-limiter — синглтон на процесс (для MVP достаточно)
+# Rate-limiter — синглтон на процесс (согласно CLAUDE.md: без Redis в MVP)
 _rate_limiter: InMemoryRateLimiter | None = None
 
 
@@ -60,8 +60,9 @@ def _user_to_response(user: User) -> UserResponse:
 # ---------------------------------------------------------------------------
 @router.post("/register", status_code=status.HTTP_201_CREATED, response_model=TokenResponse)
 def register(body: RegisterRequest, db: Session = Depends(get_db)):
-    """Регистрация нового клиента. Роль всегда CLIENT."""
-    existing = db.scalar(select(User).where(User.email == body.email))
+    """Регистрация нового клиента. Роль всегда CLIENT. Email нормализуется (strip().lower())."""
+    norm_email = body.email.strip().lower()
+    existing = db.scalar(select(User).where(func.lower(User.email) == norm_email))
     if existing is not None:
         raise ApiError(
             status_code=409,
@@ -70,7 +71,7 @@ def register(body: RegisterRequest, db: Session = Depends(get_db)):
         )
 
     user = User(
-        email=body.email,
+        email=norm_email,
         full_name=body.full_name,
         password_hash=hash_password(body.password),
         role=Role.CLIENT.value,
@@ -97,12 +98,16 @@ def register(body: RegisterRequest, db: Session = Depends(get_db)):
 # ---------------------------------------------------------------------------
 @router.post("/login", response_model=TokenResponse)
 def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
-    """Вход. Rate-limit: LOGIN_RATE_LIMIT_PER_MINUTE попыток с одного IP за 60 с."""
+    """Вход. Rate-limit по IP и по аккаунту: LOGIN_RATE_LIMIT_PER_MINUTE попыток за 60 с."""
     ip = _client_ip(request)
+    norm_email = body.email.strip().lower()
     limiter = _get_rate_limiter()
 
-    if not limiter.is_allowed(ip):
-        retry_after = limiter.seconds_until_reset(ip)
+    ip_key = f"ip:{ip}"
+    account_key = f"acc:{norm_email}"
+
+    if not limiter.is_allowed(ip_key) or not limiter.is_allowed(account_key):
+        retry_after = max(limiter.seconds_until_reset(ip_key), limiter.seconds_until_reset(account_key))
         raise ApiError(
             status_code=429,
             code=ErrorCode.RATE_LIMITED,
@@ -110,7 +115,7 @@ def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
             details=[{"retry_after_seconds": retry_after}],
         )
 
-    user = db.scalar(select(User).where(User.email == body.email))
+    user = db.scalar(select(User).where(func.lower(User.email) == norm_email))
     if user is None or not verify_password(body.password, user.password_hash):
         raise ApiError(
             status_code=401,
