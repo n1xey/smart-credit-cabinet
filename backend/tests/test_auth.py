@@ -117,6 +117,19 @@ class TestRegister:
         assert r.status_code == 409
         assert r.json()["error"]["code"] == "CONFLICT"
 
+    def test_register_case_insensitive_duplicate(self, api_client):
+        """User@Example.com и user@example.com должны конфликтовать."""
+        api_client.post(
+            "/api/v1/auth/register",
+            json={"email": "CaseTest@Example.COM", "password": "Password1!", "full_name": "Case User"},
+        )
+        r = api_client.post(
+            "/api/v1/auth/register",
+            json={"email": "casetest@example.com", "password": "Password1!", "full_name": "Case User 2"},
+        )
+        assert r.status_code == 409
+        assert r.json()["error"]["code"] == "CONFLICT"
+
     def test_register_short_password(self, api_client):
         r = api_client.post(
             "/api/v1/auth/register",
@@ -154,6 +167,15 @@ class TestLogin:
         assert body["token_type"] == "bearer"
         assert body["user"]["role"] == "CLIENT"
 
+    def test_login_case_insensitive(self, api_client, client_user):
+        """Логин должен работать независимо от регистра введённого email."""
+        r = api_client.post(
+            "/api/v1/auth/login",
+            json={"email": "CLIENT@EXAMPLE.COM", "password": "Password1!"},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["user"]["email"] == "client@example.com"
+
     def test_login_wrong_password(self, api_client, client_user):
         r = api_client.post(
             "/api/v1/auth/login",
@@ -180,6 +202,43 @@ class TestLogin:
             api_client.post("/api/v1/auth/login", json=payload)
 
         r = api_client.post("/api/v1/auth/login", json=payload)
+        assert r.status_code == 429
+        assert r.json()["error"]["code"] == "RATE_LIMITED"
+
+    def test_login_rate_limit_by_account_across_ips(self, api_client, client_user):
+        """Брутфорс одного аккаунта с разных IP должен блокироваться по лимиту аккаунта."""
+        import app.api.auth as auth_module
+
+        auth_module._rate_limiter = InMemoryRateLimiter(limit=3, window_sec=60)
+
+        payload = {"email": "client@example.com", "password": "WrongPass!"}
+        for i in range(3):
+            api_client.post("/api/v1/auth/login", json=payload, headers={"X-Forwarded-For": f"192.168.1.{i+1}"})
+
+        # 4-я попытка с абсолютно нового IP на тот же аккаунт блокируется
+        r = api_client.post("/api/v1/auth/login", json=payload, headers={"X-Forwarded-For": "10.0.0.99"})
+        assert r.status_code == 429
+        assert r.json()["error"]["code"] == "RATE_LIMITED"
+
+    def test_login_rate_limit_by_ip_across_accounts(self, api_client):
+        """Перебор разных аккаунтов с одного IP должен блокироваться по лимиту IP."""
+        import app.api.auth as auth_module
+
+        auth_module._rate_limiter = InMemoryRateLimiter(limit=3, window_sec=60)
+
+        for i in range(3):
+            api_client.post(
+                "/api/v1/auth/login",
+                json={"email": f"victim{i}@example.com", "password": "WrongPass!"},
+                headers={"X-Forwarded-For": "203.0.113.5"},
+            )
+
+        # 4-я попытка с того же IP на новый аккаунт блокируется
+        r = api_client.post(
+            "/api/v1/auth/login",
+            json={"email": "victim99@example.com", "password": "WrongPass!"},
+            headers={"X-Forwarded-For": "203.0.113.5"},
+        )
         assert r.status_code == 429
         assert r.json()["error"]["code"] == "RATE_LIMITED"
 

@@ -1,16 +1,34 @@
-"""Простой rate-limiter для эндпоинта /auth/login.
+"""Rate-limiter для защиты эндпоинта /auth/login от brute-force атак.
 
-Хранит счётчики в памяти (dict). Ключ — IP-адрес клиента.
-Сбрасывается по скользящему минутному окну.
-Для MVP достаточно; при масштабировании — заменить на Redis.
+Архитектура:
+- BaseRateLimiter: абстрактный интерфейс лимитера (метод скользящего окна).
+- InMemoryRateLimiter: потокобезопасная in-memory реализация по умолчанию для MVP
+  (согласно CLAUDE.md: "Без Redis/Kafka в MVP; в README описать как масштабировать").
+- Поддерживает проверку по составным ключам (IP и account/email) для предотвращения
+  как перебора с одного IP, так и распределённых атак на один аккаунт.
 """
 import time
+from abc import ABC, abstractmethod
 from collections import defaultdict
 from threading import Lock
 
 
-class InMemoryRateLimiter:
-    """Thread-safe счётчик запросов за последнюю минуту по ключу."""
+class BaseRateLimiter(ABC):
+    """Абстрактный интерфейс rate-лимитера."""
+
+    @abstractmethod
+    def is_allowed(self, key: str) -> bool:
+        """Проверяет, разрешён ли запрос по ключу, и регистрирует попытку."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def seconds_until_reset(self, key: str) -> int:
+        """Возвращает число секунд до освобождения первого слота."""
+        raise NotImplementedError
+
+
+class InMemoryRateLimiter(BaseRateLimiter):
+    """Thread-safe счётчик запросов за скользящее временное окно (в секундах) по ключу."""
 
     def __init__(self, limit: int, window_sec: int = 60) -> None:
         self._limit = limit
@@ -25,10 +43,12 @@ class InMemoryRateLimiter:
         with self._lock:
             timestamps = self._counts[key]
             # убираем устаревшие записи
-            self._counts[key] = [t for t in timestamps if t > cutoff]
-            if len(self._counts[key]) >= self._limit:
+            valid = [t for t in timestamps if t > cutoff]
+            if len(valid) >= self._limit:
+                self._counts[key] = valid
                 return False
-            self._counts[key].append(now)
+            valid.append(now)
+            self._counts[key] = valid
             return True
 
     def seconds_until_reset(self, key: str) -> int:

@@ -6,7 +6,7 @@
 import uuid
 from typing import Literal
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 class RegisterRequest(BaseModel):
@@ -16,12 +16,22 @@ class RegisterRequest(BaseModel):
     password: str = Field(min_length=8)
     full_name: str
 
+    @field_validator("email", mode="after")
+    @classmethod
+    def normalize_email(cls, v: EmailStr) -> str:
+        return str(v).strip().lower()
+
 
 class LoginRequest(BaseModel):
     """POST /auth/login — тело запроса. У пароля нет ограничения длины."""
 
     email: EmailStr
     password: str
+
+    @field_validator("email", mode="after")
+    @classmethod
+    def normalize_email(cls, v: EmailStr) -> str:
+        return str(v).strip().lower()
 
 
 class UserResponse(BaseModel):
