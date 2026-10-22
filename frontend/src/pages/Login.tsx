@@ -1,7 +1,11 @@
 import { FormEvent, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { Button } from '@alfalab/core-components-button';
+import { Input } from '@alfalab/core-components-input';
+import { Gap } from '@alfalab/core-components-gap';
 import { useAuth } from '../auth';
-import { api, setToken } from '../api/client';
+import { api, errorText, setToken } from '../api/client';
+import { ErrorPlate, H1, Hint } from './shared';
 export default function Login() {
   const { login } = useAuth(); const nav = useNavigate();
   const [mode, setMode] = useState<'in' | 'up'>('in'); const [f, setF] = useState({ email: '', password: '', full_name: '' });
@@ -11,18 +15,24 @@ export default function Login() {
     try {
       if (mode === 'up') await api('/auth/register', { method: 'POST', json: f }).then((r: any) => setToken(r.access_token));
       const u = await login(f.email, f.password); nav(u.role === 'CLIENT' ? '/' : '/operator');
-    } catch (x: any) { setErr(x.message); } finally { setBusy(false); }
+    } catch (x) { setErr(errorText(x)); } finally { setBusy(false); }
   };
-  const set = (k: string) => (e: any) => setF({ ...f, [k]: e.target.value });
-  return <form className="card" onSubmit={submit} style={{ maxWidth: 420, margin: '40px auto' }}>
-    <h1>{mode === 'in' ? 'Вход' : 'Регистрация'}</h1>
-    <p className="muted">Подайте заявку на кредит для бизнеса онлайн и следите за решением в одном месте.</p>
-    {mode === 'up' && <><label htmlFor="n">Ваше имя</label><input id="n" required value={f.full_name} onChange={set('full_name')} /></>}
-    <label htmlFor="e">Электронная почта</label><input id="e" type="email" required value={f.email} onChange={set('email')} />
-    <label htmlFor="p">Пароль {mode === 'up' && <small>(не короче 8 символов)</small>}</label><input id="p" type="password" minLength={8} required value={f.password} onChange={set('password')} />
-    {err && <p className="err" role="alert">{err}</p>}
-    <p><button disabled={busy}>{mode === 'in' ? 'Войти' : 'Создать аккаунт'}</button>{' '}
-      <button type="button" className="sec" onClick={() => setMode(mode === 'in' ? 'up' : 'in')}>{mode === 'in' ? 'Регистрация' : 'У меня уже есть аккаунт'}</button></p>
-    {import.meta.env.VITE_DEMO_MODE === 'true' && <small>Демо: client1@demo.local / Demo12345! — всё данные вымышленные.</small>}
+  const set = (k: string) => (_: unknown, { value }: { value: string }) => setF({ ...f, [k]: value });
+  return <form className="card center" onSubmit={submit}>
+    <H1>{mode === 'in' ? 'Вход' : 'Регистрация'}</H1>
+    <Hint>Подайте заявку на кредит для бизнеса онлайн и следите за решением в одном месте.</Hint>
+    <Gap size={24} />
+    <div className="stack">
+      {mode === 'up' && <Input label="Ваше имя" block required value={f.full_name} onChange={set('full_name')} />}
+      <Input label="Электронная почта" type="email" block required autoComplete="email" value={f.email} onChange={set('email')} />
+      <Input label="Пароль" type="password" block required minLength={8} autoComplete={mode === 'in' ? 'current-password' : 'new-password'} hint={mode === 'up' ? 'Не короче 8 символов' : undefined} value={f.password} onChange={set('password')} />
+    </div>
+    <Gap size={16} />
+    <ErrorPlate text={err} />
+    <div className="stack">
+      <Button view="accent" type="submit" block loading={busy}>{mode === 'in' ? 'Войти' : 'Создать аккаунт'}</Button>
+      <Button view="transparent" block onClick={() => setMode(mode === 'in' ? 'up' : 'in')}>{mode === 'in' ? 'Зарегистрироваться' : 'У меня уже есть аккаунт'}</Button>
+    </div>
+    {import.meta.env.VITE_DEMO_MODE === 'true' && <><Gap size={12} /><Hint>Демо: client1@demo.local / Demo12345! — все данные вымышленные.</Hint></>}
   </form>;
 }
