@@ -24,7 +24,7 @@ export default function Operator() {
     <div className="row">{STATUSES.map(s => <Tag key={s} size={32} checked={st === s} onClick={() => setSt(s)}>{s ? LABEL[s] : 'Все'}</Tag>)}
       <span style={{ flex: 1 }} /><Tag size={32} view="filled" checked={mine} onClick={() => setMine(!mine)}>Только мои</Tag></div>
     <Gap size={16} /><ErrorPlate text={err} />
-    <div className="card scroll">{!rows ? <Loading /> : rows.length === 0 ? <Hint>В очереди пусто</Hint> : <Table>
+    <div className="scroll">{!rows ? <Loading /> : rows.length === 0 ? <div className="card"><Hint>В очереди пусто</Hint></div> : <Table>
       <Table.THead><Table.THeadCell>Компания</Table.THeadCell><Table.THeadCell>Сумма</Table.THeadCell><Table.THeadCell>Статус</Table.THeadCell><Table.THeadCell>Обновлена</Table.THeadCell></Table.THead>
       <Table.TBody>{rows.map(r => <Table.TRow key={r.id} onClick={() => nav(`/operator/${r.id}`)}>
         <Table.TCell><Link to={`/operator/${r.id}`}>{r.company_name ?? r.id.slice(0, 8)}</Link></Table.TCell><Table.TCell>{money(r.amount_rub)} / {r.term_months} мес.</Table.TCell>
@@ -51,10 +51,10 @@ export function OperatorCard() {
       {canDecide && !a.assigned_operator_id && <><Gap size={16} /><Button view="accent" size={40} onClick={take}>Взять в работу</Button></>}</div>
     {sc && <div className="card scroll"><div className="row"><H2>Скоринг: {sc.score} баллов</H2><Status view="contrast" color={GRADE_COLOR[sc.grade] ?? 'grey'} size={24}>Группа {sc.grade}</Status></div>
       {sc.knockouts?.length > 0 && <><Plate view="negative" rounded title={`Стоп-факторы: ${sc.knockouts.join(', ')}`} /><Gap size={12} /></>}
-      <Table><Table.THead><Table.THeadCell>Фактор</Table.THeadCell><Table.THeadCell>Значение</Table.THeadCell><Table.THeadCell>Баллы</Table.THeadCell><Table.THeadCell>Комментарий</Table.THeadCell></Table.THead>
+      <Table wrapper={false}><Table.THead><Table.THeadCell>Фактор</Table.THeadCell><Table.THeadCell>Значение</Table.THeadCell><Table.THeadCell>Баллы</Table.THeadCell><Table.THeadCell>Комментарий</Table.THeadCell></Table.THead>
         <Table.TBody>{sc.factors?.map((f: any) => <Table.TRow key={f.factor}><Table.TCell>{f.factor}</Table.TCell><Table.TCell>{f.value}</Table.TCell><Table.TCell>{f.points}/{f.max_points}</Table.TCell><Table.TCell>{f.comment}</Table.TCell></Table.TRow>)}</Table.TBody></Table></div>}
     <div className="grid"><div className="card"><H2>БКИ</H2><pre>{JSON.stringify(a.enrichment?.bki ?? {}, null, 1)}</pre></div><div className="card"><H2>ЕГРЮЛ</H2><pre>{JSON.stringify(a.enrichment?.egrul ?? {}, null, 1)}</pre></div></div>
-    {sd && <div className="card"><Plate view="common" rounded title="Подсказка системы">{LABEL[sd.outcome] ?? sd.outcome}{sd.offer && <> — {money(sd.offer.amount_rub)}, {sd.offer.term_months} мес., {sd.offer.rate_percent}%</>}</Plate></div>}
+    {sd && <><Plate view="common" rounded title="Подсказка системы">{LABEL[sd.outcome] ?? sd.outcome}{sd.offer && <> — {money(sd.offer.amount_rub)}, {sd.offer.term_months} мес., {sd.offer.rate_percent}%</>}</Plate><Gap size={16} /></>}
     {canDecide && <div className="card"><H2>Решение</H2><div className="stack">
       <Select label="Что решаем" block options={OUTCOMES} selected={d.outcome} onChange={({ selected }) => selected && setD({ ...d, outcome: selected.key })} />
       {needsOffer && <div className="grid"><Input label="Сумма, ₽" type="number" block value={d.amount} onChange={set('amount')} /><Input label="Срок, мес." type="number" block value={d.term} onChange={set('term')} /><Input label="Ставка, %" type="number" step="0.1" block value={d.rate} onChange={set('rate')} /></div>}
