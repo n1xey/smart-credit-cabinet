@@ -1,4 +1,6 @@
-import { ReactNode } from 'react';
+import { ReactNode, useCallback, useEffect, useState } from 'react';
+import { Button } from '@alfalab/core-components-button';
+import { apiPage, errorText } from '../api/client';
 import { Status } from '@alfalab/core-components-status';
 import { Typography } from '@alfalab/core-components-typography';
 import { Plate } from '@alfalab/core-components-plate';
@@ -15,4 +17,17 @@ export const Hint = ({ children }: { children: ReactNode }) => <Typography.Text 
 export const H1 = ({ children }: { children: ReactNode }) => <Typography.TitleResponsive tag="h1" view="medium" font="system" weight="bold" style={{ margin: '0 0 16px' }}>{children}</Typography.TitleResponsive>;
 export const H2 = ({ children }: { children: ReactNode }) => <Typography.Title tag="h2" view="small" font="system" weight="bold" style={{ margin: '0 0 12px' }}>{children}</Typography.Title>;
 export const ErrorPlate = ({ text }: { text: string }) => text ? <div role="alert" style={{ marginBottom: 16 }}><Plate view="negative" rounded title={text} /></div> : null;
+// Постраничный список: первая страница при смене path, «Показать ещё» догружает следующую
+export function usePaged<T>(path: string) {
+  const [items, setItems] = useState<T[] | null>(null); const [total, setTotal] = useState(0); const [err, setErr] = useState(''); const [busy, setBusy] = useState(false);
+  const load = useCallback(async (offset: number) => {
+    setErr(''); setBusy(true);
+    try { const p = await apiPage<T>(path, offset); setItems(prev => offset === 0 || !prev ? p.items : [...prev, ...p.items]); setTotal(p.total); }
+    catch (e) { setErr(errorText(e)); } finally { setBusy(false); }
+  }, [path]);
+  useEffect(() => { setItems(null); load(0); }, [load]);
+  return { items, total, err, busy, more: () => load(items?.length ?? 0), hasMore: (items?.length ?? 0) < total };
+}
+export const ShowMore = ({ shown, total, busy, onClick }: { shown: number; total: number; busy: boolean; onClick(): void }) =>
+  <div className="row" style={{ marginBottom: 16 }}><Hint>Показано {shown} из {total}</Hint>{shown < total && <Button view="secondary" size={40} loading={busy} onClick={onClick}>Показать ещё</Button>}</div>;
 export const Loading = () => <div className="row" role="status"><Spinner visible preset={24} /> <span className="muted">Загрузка…</span></div>;

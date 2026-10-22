@@ -5,7 +5,7 @@ import { Input } from '@alfalab/core-components-input';
 import { Select } from '@alfalab/core-components-select';
 import { Plate } from '@alfalab/core-components-plate';
 import { Gap } from '@alfalab/core-components-gap';
-import { api, Company as C } from '../api/client';
+import { api, errorText, Company as C } from '../api/client';
 import { ErrorPlate, H1, Hint } from './shared';
 const FORMS = [{ key: 'OOO', content: 'ООО' }, { key: 'IP', content: 'ИП' }];
 export default function Company() {
@@ -16,9 +16,9 @@ export default function Company() {
   const lookup = async () => {
     setErr(''); setMsg(''); setBusy(true);
     try { setC(await api<C>(`/company/lookup?inn=${c.inn}`)); setMsg('Нашли компанию и заполнили данные. Проверьте их.'); }
-    catch (e: any) { setErr(e.message); } finally { setBusy(false); }
+    catch (e) { setErr(errorText(e)); } finally { setBusy(false); }
   };
-  const save = async (e: FormEvent) => { e.preventDefault(); setErr(''); setBusy(true); try { await api('/company', { method: 'PUT', json: c }); nav('/apply'); } catch (x: any) { setErr(x.message); setBusy(false); } };
+  const save = async (e: FormEvent) => { e.preventDefault(); setErr(''); setBusy(true); try { await api('/company', { method: 'PUT', json: c }); nav('/apply'); } catch (x) { setErr(errorText(x)); setBusy(false); } };
   const set = (k: keyof C) => (_: unknown, { value }: { value: string }) => setC({ ...c, [k]: value });
   return <form className="card" onSubmit={save} style={{ maxWidth: 640 }}>
     <H1>Ваша компания</H1><Hint>Введите ИНН — остальное мы подставим сами.</Hint>

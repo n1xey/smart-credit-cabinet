@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@alfalab/core-components-button';
 import { Steps } from '@alfalab/core-components-steps';
@@ -10,7 +10,7 @@ import { Attach } from '@alfalab/core-components-attach';
 import { Plate } from '@alfalab/core-components-plate';
 import { Typography } from '@alfalab/core-components-typography';
 import { Gap } from '@alfalab/core-components-gap';
-import { api, Application, Product, money, payment } from '../api/client';
+import { api, errorText, Application, Product, money, payment } from '../api/client';
 import { ErrorPlate, H1, H2, Hint } from './shared';
 const PURPOSES = [['WORKING_CAPITAL', 'Закупки, зарплаты, текущие расходы'], ['EQUIPMENT', 'Купить оборудование'], ['URGENT_CASH', 'Нужны деньги срочно'], ['OTHER', 'Другое']];
 const DOC_NAMES: Record<string, string> = { FINANCIAL_STATEMENT: 'Финансовая отчётность', SUPPLIER_INVOICE: 'Счёт поставщика', OTHER: 'Другое' };
@@ -23,27 +23,28 @@ export default function Wizard() {
   const [rec, setRec] = useState<{ product_code: string; explanation: string } | null>(null);
   const [amount, setAmount] = useState(1_000_000); const [term, setTerm] = useState(12);
   const [fin, setFin] = useState({ revenue_12m_rub: '', net_profit_12m_rub: '', existing_monthly_payments_rub: '0', purpose: '' });
-  const [app, setApp] = useState<Application | null>(null); const [docs, setDocs] = useState<any[]>([]);
+  const [app, setApp] = useState<Application | null>(null); const [docs, setDocs] = useState<any[]>([]); const submitKey = useRef<string>();
   const [err, setErr] = useState(''); const [busy, setBusy] = useState(false);
-  useEffect(() => { api<Product[]>('/products').then(setProducts).catch(e => setErr(e.message)); }, []);
+  useEffect(() => { api<Product[]>('/products').then(setProducts).catch(e => setErr(errorText(e))); }, []);
   const p = products.find(x => x.code === code);
   const pick = (c: string) => { const pr = products.find(x => x.code === c); if (!pr) return; setCode(c); setAmount(Math.min(Math.max(amount, pr.min_amount_rub), pr.max_amount_rub)); setTerm(Math.min(Math.max(term, pr.min_term_months), pr.max_term_months)); };
-  const recommend = async (k: string) => { setPurpose(k); try { const r = await api<any>('/products/recommend', { method: 'POST', json: { purpose: k } }); setRec(r); pick(r.product_code); } catch (e: any) { setErr(e.message); } };
+  const recommend = async (k: string) => { setPurpose(k); try { const r = await api<any>('/products/recommend', { method: 'POST', json: { purpose: k } }); setRec(r); pick(r.product_code); } catch (e) { setErr(errorText(e)); } };
   const body = () => ({ product_code: code, amount_rub: amount, term_months: term, purpose: fin.purpose || undefined,
     revenue_12m_rub: fin.revenue_12m_rub ? +fin.revenue_12m_rub : undefined, net_profit_12m_rub: fin.net_profit_12m_rub ? +fin.net_profit_12m_rub : undefined, existing_monthly_payments_rub: +fin.existing_monthly_payments_rub || 0 });
   const save = async () => { // автосохранение черновика при каждом шаге
-    const a = app ? await api<Application>(`/applications/${app.id}`, { method: 'PATCH', json: body() }) : await api<Application>('/applications', { method: 'POST', json: body() });
+    const a = app ? await api<Application>(`/applications/${app.id}`, { method: 'PATCH', json: body(), ifMatch: app.version }) : await api<Application>('/applications', { method: 'POST', json: body() });
     setApp(a); return a;
   };
-  const next = async () => { setErr(''); setBusy(true); try { if (step >= 1) await save(); setStep(step + 1); } catch (e: any) { setErr(e.message); } finally { setBusy(false); } };
+  const next = async () => { setErr(''); setBusy(true); try { if (step >= 1) await save(); setStep(step + 1); } catch (e) { setErr(errorText(e)); } finally { setBusy(false); } };
   const upload = async (type: string, file: File) => {
     setErr(''); const fd = new FormData(); fd.append('doc_type', type); fd.append('file', file);
-    try { const d = await api<any>(`/applications/${app!.id}/documents`, { method: 'POST', body: fd }); setDocs([...docs, d]); } catch (e: any) { setErr(e.message); }
+    try { const d = await api<any>(`/applications/${app!.id}/documents`, { method: 'POST', body: fd }); setDocs([...docs, d]); } catch (e) { setErr(errorText(e)); }
   };
   const submit = async () => {
     setBusy(true); setErr('');
-    try { const id = app!.id; const key = crypto.randomUUID(); await api(`/applications/${id}/submit`, { method: 'POST', headers: { 'Idempotency-Key': key } }); nav(`/app/${id}`); }
-    catch (e: any) { setErr(e.message); setBusy(false); }
+    // один ключ на заявку: повтор после сетевой ошибки не создаёт вторую подачу
+    try { const id = app!.id; submitKey.current ??= crypto.randomUUID(); await api(`/applications/${id}/submit`, { method: 'POST', headers: { 'Idempotency-Key': submitKey.current } }); nav(`/app/${id}`); }
+    catch (e) { setErr(errorText(e)); setBusy(false); }
   };
   const missing = (p?.required_documents ?? []).filter(t => !docs.some(d => d.doc_type === t));
   const rate = p?.base_rate_percent ?? 0;
@@ -75,7 +76,7 @@ export default function Wizard() {
       <div className="stack">
         {FIN.map(([k, l]) => <AmountInput key={k} label={l} block currency="RUR" minority={1} integersOnly positiveOnly={k === 'existing_monthly_payments_rub'}
           value={fin[k] === '' ? null : +fin[k]} onChange={(_, { value }) => setFin({ ...fin, [k]: value === null ? '' : String(value) })} />)}
-        <Textarea label="На что нужны деньги (по желанию)" block autosize minRows={2} maxLength={500} showCounter value={fin.purpose} onChange={(_, { value }) => setFin({ ...fin, purpose: value })} />
+        <Textarea label="На что нужны деньги (по желанию)" aria-label="На что нужны деньги (по желанию)" block autosize minRows={2} maxLength={500} showCounter value={fin.purpose} onChange={(_, { value }) => setFin({ ...fin, purpose: value })} />
       </div></div>}
     {step === 3 && <div className="card"><H2>Документы</H2>
       {(p?.required_documents.length ?? 0) === 0 ? <Hint>Для этого продукта документы не нужны.</Hint> : <div className="stack">{p!.required_documents.map(t => <div key={t}>

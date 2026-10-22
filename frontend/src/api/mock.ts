@@ -82,7 +82,7 @@ function pipeline(a: J) {
 const users = new Map<string, J>([['operator@demo.local', { role: 'OPERATOR', full_name: 'Оператор Демо' }], ['admin@demo.local', { role: 'ADMIN', full_name: 'Админ Демо' }],
   ...SEED.map((_, i) => [`client${i + 1}@demo.local`, { role: 'CLIENT', full_name: `Клиент ${i + 1}` }] as [string, J])]);
 const me = (email: string) => ({ id: email, email, ...users.get(email) });
-const view = (a: J) => { const { owner, docs, offer, info, history, score, grade, knockouts, ...rest } = a;
+const view = (a: J) => { const { owner, docs, offer, info, history, score, grade, knockouts, submitKey, ...rest } = a;
   return { ...rest, status_title: TEXT[a.status][0], status_description: TEXT[a.status][1], next_action: NEXT[a.status] ?? 'NONE', reason_messages: (a.reason_codes ?? []).map((c: string) => REASON[c] ?? c) }; };
 const opView = (a: J) => ({ ...view(a), company: [...companies.entries()].find(([e]) => e === a.owner)?.[1], documents: a.docs, history: a.history,
   enrichment: { bki: { bki_score: a.grade === 'D' ? 430 : 780, overdue_active_days: 0, overdue_closed_12m_count: a.grade === 'D' ? 2 : 0 }, egrul: { registry_status: 'ACTIVE', registry_flags: [] } },
@@ -90,7 +90,13 @@ const opView = (a: J) => ({ ...view(a), company: [...companies.entries()].find((
   suggested_decision: a.status === 'MANUAL_REVIEW' ? { outcome: 'COUNTER_OFFER', offer: { amount_rub: Math.floor(a.amount_rub / 2 / 10_000) * 10_000, term_months: a.term_months, rate_percent: rate(a.product_code) + 6 } } : undefined });
 
 const res = (status: number, data?: J, headers: Record<string, string> = {}) => new Response(status === 204 || status === 304 ? null : JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json', ...headers } });
-const fail = (status: number, code: string, message: string) => res(status, { error: { code, message } });
+const fail = (status: number, code: string, message: string, details?: J[]) => res(status, { error: { code, message, ...(details && { details }) } });
+// Пагинация по контракту: limit 1–100 (по умолчанию 20), offset ≥ 0, общее число в X-Total-Count
+const page = (url: URL, list: J[]) => { const limit = Math.min(Math.max(Number(url.searchParams.get('limit') ?? 20), 1), 100); const offset = Math.max(Number(url.searchParams.get('offset') ?? 0), 0);
+  return res(200, list.slice(offset, offset + limit), { 'X-Total-Count': String(list.length) }); };
+// If-Match необязателен; если передан и не совпал с версией — 409 VERSION_CONFLICT
+const stale = (h: Headers, a: J) => h.has('If-Match') && h.get('If-Match') !== `"${a.version}"`;
+const conflict = () => fail(409, 'VERSION_CONFLICT', 'Версия заявки изменилась');
 export async function mockFetch(input: string, init: RequestInit = {}): Promise<Response> {
   await new Promise(r => setTimeout(r, 250)); // имитация сети, чтобы были видны состояния загрузки
   const url = new URL(input.replace(/^mock/, 'http://mock'));
@@ -110,16 +116,26 @@ export async function mockFetch(input: string, init: RequestInit = {}): Promise<
   if (path === '/company/lookup') { const s = SEED.find(x => x[0] === url.searchParams.get('inn')); return s ? res(200, { inn: s[0], name: s[1], legal_form: s[2], okved: s[3], address: 'г. Москва, ул. Примерная, д. 1', registration_date: '2021-03-15' }) : fail(404, 'NOT_FOUND', 'ИНН не найден в реестре. Попробуйте ИНН из демо-данных, например 0000001011'); }
   if (path === '/feed') return res(200, [{ id: 'f1', tag: 'TIP', title: 'Как банк считает платёж', summary: 'Ежемесячный платёж зависит от суммы, срока и ставки. Чем дольше срок, тем меньше платёж.' },
     { id: 'f2', tag: 'EDUCATION', title: 'Какие документы готовить', summary: 'Для оборотного кредита достаточно отчётности за последний год.' }, { id: 'f3', tag: 'STATUS', title: 'Решение онлайн', summary: 'Статус заявки обновляется сам — не нужно звонить в банк.' }]);
-  if (path === '/applications' && method === 'GET') return res(200, apps.filter(a => a.owner === email).sort((x, y) => y.updated_at.localeCompare(x.updated_at)).map(view));
+  if (path === '/applications' && method === 'GET') return page(url, apps.filter(a => a.owner === email).sort((x, y) => y.updated_at.localeCompare(x.updated_at)).map(view));
   if (path === '/applications' && method === 'POST') { if (!companies.has(email)) return fail(422, 'VALIDATION_ERROR', 'Сначала заполните профиль компании');
     const a: J = { id: uid(), owner: email, company_name: companies.get(email).name, status: 'DRAFT', version: 1, docs: [], history: [], updated_at: now(), ...body }; apps.push(a); return res(201, view(a)); }
   if (path === '/operator/queue') { if (user.role === 'CLIENT') return fail(403, 'FORBIDDEN', 'Нет доступа'); const st = url.searchParams.get('status'); const mine = url.searchParams.get('assigned_to_me') === 'true';
-    return res(200, apps.filter(a => a.status !== 'DRAFT' && (!st || a.status === st) && (!mine || a.assigned_operator_id === email)).sort((x, y) => y.updated_at.localeCompare(x.updated_at)).map(view)); }
+    return page(url, apps.filter(a => a.status !== 'DRAFT' && (!st || a.status === st) && (!mine || a.assigned_operator_id === email)).sort((x, y) => y.updated_at.localeCompare(x.updated_at)).map(view)); }
   const m = path.match(/^\/(operator\/)?applications\/([^/]+)(?:\/(.+))?$/); if (!m) return fail(404, 'NOT_FOUND', 'Нет такого адреса в демо-моке');
   const [, op, id, sub] = m; const a = apps.find(x => x.id === id && (op ? user.role !== 'CLIENT' : x.owner === email)); if (!a) return fail(404, 'NOT_FOUND', 'Заявка не найдена');
   if (op) {
-    if (sub === 'take') { a.assigned_operator_id = email; a.history.push({ from_status: a.status, to_status: a.status, actor_type: 'OPERATOR', reason_code: 'TAKEN', comment: 'Взята в работу', created_at: now() }); a.version++; }
+    if (sub === 'take') { if (a.status !== 'MANUAL_REVIEW') return fail(409, 'INVALID_TRANSITION', 'Взять можно только заявку на ручной проверке');
+      if (a.assigned_operator_id && a.assigned_operator_id !== email) return fail(409, 'CONFLICT', 'Заявку уже взял другой оператор'); a.assigned_operator_id = email; a.history.push({ from_status: a.status, to_status: a.status, actor_type: 'OPERATOR', reason_code: 'TAKEN', comment: 'Взята в работу', created_at: now() }); a.version++; }
     if (sub === 'decision') {
+      if (a.status !== 'MANUAL_REVIEW') return fail(409, 'INVALID_TRANSITION', 'Решение принимается только по заявке на ручной проверке');
+      if (a.assigned_operator_id !== email) return fail(409, 'CONFLICT', 'Сначала возьмите заявку в работу');
+      if (stale(h, a)) return conflict();
+      const bad: J[] = [];
+      if (!body.comment || body.comment.length < 3) bad.push({ field: 'comment', message: 'не короче 3 символов' });
+      if (['OFFER', 'COUNTER_OFFER'].includes(body.outcome) && !(Number.isInteger(body.offer?.amount_rub) && Number.isInteger(body.offer?.term_months))) bad.push({ field: 'offer', message: 'сумма и срок — целые числа' });
+      if (body.outcome === 'REJECTED' && !body.reason_codes?.length) bad.push({ field: 'reason_codes', message: 'нужна хотя бы одна причина' });
+      if (body.outcome === 'NEEDS_INFO' && !body.info_items?.length) bad.push({ field: 'info_items', message: 'укажите, что запросить' });
+      if (bad.length) return fail(422, 'VALIDATION_ERROR', 'Решение не прошло проверку', bad);
       if (body.outcome === 'OFFER' || body.outcome === 'COUNTER_OFFER') makeOffer(a, body.outcome === 'OFFER' ? 'ORIGINAL' : 'COUNTER', body.offer.amount_rub, body.offer.term_months, body.offer.rate_percent, body.outcome === 'COUNTER_OFFER' ? body.comment : undefined);
       if (body.outcome === 'NEEDS_INFO') a.info = { id: uid(), round: 1, requested_by: email, created_at: now(), items: body.info_items };
       if (body.outcome === 'REJECTED') a.reason_codes = body.reason_codes ?? [];
@@ -128,9 +144,16 @@ export async function mockFetch(input: string, init: RequestInit = {}): Promise<
     return res(200, opView(a));
   }
   if (!sub && method === 'GET') { const tag = `"${a.version}"`; return h.get('If-None-Match') === tag ? res(304) : res(200, view(a), { ETag: tag }); }
-  if (!sub && method === 'PATCH') { Object.assign(a, body); a.version++; a.updated_at = now(); return res(200, view(a)); }
+  if (!sub && method === 'PATCH') { if (a.status !== 'DRAFT') return fail(409, 'INVALID_TRANSITION', 'Менять можно только черновик'); if (stale(h, a)) return conflict(); Object.assign(a, body); a.version++; a.updated_at = now(); return res(200, view(a)); }
   if (sub === 'history') return res(200, a.history);
-  if (sub === 'submit') { pipeline(a); return res(202, view(a)); }
+  if (sub === 'submit') {
+    if (a.status !== 'DRAFT') return a.submitKey === h.get('Idempotency-Key') ? res(202, view(a)) : fail(409, 'INVALID_TRANSITION', 'Заявка уже подана');
+    const p = PRODUCTS.find(x => x.code === a.product_code)!; const bad: J[] = [];
+    if (a.revenue_12m_rub == null) bad.push({ field: 'revenue_12m_rub', message: 'укажите выручку' });
+    if (a.net_profit_12m_rub == null) bad.push({ field: 'net_profit_12m_rub', message: 'укажите чистую прибыль' });
+    if (a.amount_rub < p.min_amount_rub || a.amount_rub > p.max_amount_rub) bad.push({ field: 'amount_rub', message: 'вне диапазона продукта' });
+    if (bad.length) return fail(422, 'VALIDATION_ERROR', 'Заявка заполнена не полностью', bad);
+    a.submitKey = h.get('Idempotency-Key'); pipeline(a); return res(202, view(a)); }
   if (sub === 'cancel') { move(a, 'CANCELLED', 'CLIENT'); return res(200, view(a)); }
   if (sub === 'documents') { const f = (body as FormData).get('file') as File; const d = { id: uid(), doc_type: (body as FormData).get('doc_type'), filename: f.name, size_bytes: f.size, uploaded_at: now() }; a.docs.push(d); return res(201, d); }
   if (sub === 'info-request') { if (method === 'GET') return a.info ? res(200, a.info) : fail(404, 'NOT_FOUND', 'Запроса уточнений нет');
@@ -138,6 +161,8 @@ export async function mockFetch(input: string, init: RequestInit = {}): Promise<
     setTimeout(() => { a.score = 73; a.grade = 'B'; makeOffer(a, 'COUNTER', 890_000, a.term_months, 18.5, 'С учётом выручки и текущих платежей мы можем одобрить меньшую сумму.'); move(a, 'COUNTER_OFFER'); }, 5000);
     return res(200, view(a)); }
   if (sub === 'offer') return a.offer && ['OFFER', 'COUNTER_OFFER'].includes(a.status) ? res(200, a.offer) : fail(404, 'NOT_FOUND', 'Активного предложения нет');
+  if ((sub === 'offer/accept' || sub === 'offer/decline') && (!['OFFER', 'COUNTER_OFFER'].includes(a.status))) return fail(409, 'INVALID_TRANSITION', 'Предложение уже неактивно');
+  if ((sub === 'offer/accept' || sub === 'offer/decline') && stale(h, a)) return conflict();
   if (sub === 'offer/accept') { a.offer.state = 'ACCEPTED'; move(a, 'ACCEPTED', 'CLIENT'); setTimeout(() => move(a, 'SIGNING'), 2500); return res(200, view(a)); }
   if (sub === 'offer/decline') { a.offer.state = 'DECLINED'; move(a, 'CANCELLED', 'CLIENT'); return res(200, view(a)); }
   if (sub === 'sign') { if (a.status !== 'SIGNING') return fail(409, 'INVALID_TRANSITION', 'Документы ещё готовятся, подождите пару секунд'); move(a, 'DISBURSED', 'CLIENT'); return res(200, view(a)); }
