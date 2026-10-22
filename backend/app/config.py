@@ -19,8 +19,12 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://credit:credit@localhost:5432/credit"
     openapi_path: Path = Field(default=_REPO_ROOT / "docs" / "api" / "openapi.yaml")
 
-    # auth
-    jwt_secret: str = Field(default_factory=lambda: secrets.token_urlsafe(32))
+    # auth: обязательный секрет из env; должен сохраняться между рестартами сервиса
+    jwt_secret: str = Field(
+        ...,
+        min_length=16,
+        description="JWT secret key from env; must be static across restarts",
+    )
     jwt_ttl_minutes: int = 60
     login_rate_limit_per_minute: int = 10
 
@@ -45,14 +49,11 @@ class Settings(BaseSettings):
     def validate_security_and_critical_settings(self) -> "Settings":
         is_prod = self.app_env.lower() in ("prod", "production", "stage", "staging")
         if is_prod:
-            if not self.jwt_secret or self.jwt_secret == "change-me-in-env" or len(self.jwt_secret) < 32:
+            if self.jwt_secret == "change-me-in-env" or len(self.jwt_secret) < 32:
                 raise ValueError(
                     "JWT_SECRET must be securely configured via environment variable in production "
                     "(minimum 32 characters, not default placeholder)"
                 )
-        else:
-            if self.jwt_secret == "change-me-in-env":
-                self.jwt_secret = secrets.token_urlsafe(32)
 
         if self.jwt_ttl_minutes <= 0:
             raise ValueError("jwt_ttl_minutes must be positive")

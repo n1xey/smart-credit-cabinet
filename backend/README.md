@@ -5,10 +5,13 @@
 cd backend
 uv sync                      # ставит зависимости, создаёт uv.lock (закоммитить!)
 export DATABASE_URL=postgresql+psycopg://credit:credit@localhost:5432/credit
+export JWT_SECRET=dev-secret-key-change-in-production-min-32-chars-long
 uv run alembic upgrade head
 uv run uvicorn app.main:app --reload
 ```
 Swagger UI: http://localhost:8000/docs · health: `/health/live`, `/health/ready`.
+
+> **Безопасность JWT:** `JWT_SECRET` — обязательный параметр конфигурации. Он должен храниться в secret manager / env и **не меняться между рестартами сервиса**, чтобы активные пользовательские сессии не инвалидировались. В `production` значение проверяется на минимальную длину 32 символа и запрет дефолтных плейсхолдеров.
 
 ## Тесты
 ```bash

@@ -203,6 +203,41 @@ class TestMe:
         r = api_client.get("/api/v1/auth/me", headers={"Authorization": "Bearer garbage.token.here"})
         assert r.status_code == 401
 
+    def test_me_with_token_missing_claims_returns_401(self, api_client):
+        from jose import jwt
+        from app.config import get_settings
+
+        raw_token = jwt.encode({"sub": str(uuid.uuid4())}, get_settings().jwt_secret, algorithm="HS256")
+        r = api_client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {raw_token}"})
+        assert r.status_code == 401
+        assert r.json()["error"]["code"] == "UNAUTHORIZED"
+
+    def test_me_with_token_invalid_sub_uuid_returns_401(self, api_client):
+        from jose import jwt
+        from app.config import get_settings
+
+        raw_token = jwt.encode(
+            {"sub": "not-a-uuid", "role": "CLIENT", "email": "a@b.com"},
+            get_settings().jwt_secret,
+            algorithm="HS256",
+        )
+        r = api_client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {raw_token}"})
+        assert r.status_code == 401
+        assert r.json()["error"]["code"] == "UNAUTHORIZED"
+
+    def test_me_with_token_invalid_claim_types_returns_401(self, api_client):
+        from jose import jwt
+        from app.config import get_settings
+
+        raw_token = jwt.encode(
+            {"sub": str(uuid.uuid4()), "role": 12345, "email": "a@b.com"},
+            get_settings().jwt_secret,
+            algorithm="HS256",
+        )
+        r = api_client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {raw_token}"})
+        assert r.status_code == 401
+        assert r.json()["error"]["code"] == "UNAUTHORIZED"
+
     def test_me_operator_role(self, api_client, operator_user):
         r = api_client.get("/api/v1/auth/me", headers=auth_headers(operator_user))
         assert r.status_code == 200
