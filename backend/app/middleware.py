@@ -30,7 +30,9 @@ class CorrelationIdMiddleware:
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
                 status["code"] = message["status"]
-                headers = MutableHeaders(scope=message)
+                raw_headers = list(message.get("headers", []))
+                message["headers"] = raw_headers
+                headers = MutableHeaders(raw=raw_headers)
                 if "x-correlation-id" not in headers:
                     headers.append("X-Correlation-ID", cid)
             await send(message)
