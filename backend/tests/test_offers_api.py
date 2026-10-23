@@ -318,9 +318,38 @@ def test_accept_expired_offer_fails(api_client, client_user, offer_application, 
     assert resp.json()["error"]["code"] == "INVALID_TRANSITION"
 
 
-def test_decline_offer_success(api_client, client_user, offer_application, db_session):
+def test_get_expired_offer_returns_404(api_client, client_user, offer_application, db_session):
+    app, offer = offer_application
+    offer.valid_until = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=1)
+    db_session.commit()
+
+    resp = api_client.get(
+        f"/api/v1/applications/{app.id}/offer",
+        headers=auth_headers(client_user),
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "NOT_FOUND"
+
+
+def test_decline_offer_lifecycle(api_client, client_user, offer_application, db_session):
     app, offer = offer_application
 
+    # 1. Попытка отказа от истёкшего оффера -> 409 INVALID_TRANSITION
+    offer.valid_until = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=2)
+    db_session.commit()
+
+    resp_expired = api_client.post(
+        f"/api/v1/applications/{app.id}/offer/decline",
+        headers=auth_headers(client_user),
+    )
+    assert resp_expired.status_code == 409
+    assert resp_expired.json()["error"]["code"] == "INVALID_TRANSITION"
+
+    # Восстанавливаем срок действия оффера
+    offer.valid_until = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=2)
+    db_session.commit()
+
+    # 2. Успешный отказ от активного оффера
     resp = api_client.post(
         f"/api/v1/applications/{app.id}/offer/decline",
         headers=auth_headers(client_user),
@@ -332,6 +361,18 @@ def test_decline_offer_success(api_client, client_user, offer_application, db_se
     assert app.status == ApplicationStatus.CANCELLED.value
     db_session.refresh(offer)
     assert offer.state == "DECLINED"
+
+    # 3. Попытка отказа при отсутствии активного оффера (уже DECLINED) -> 409
+    # Переводим статус заявки в OFFER для проверки отсутствия активного оффера
+    app.status = ApplicationStatus.OFFER.value
+    db_session.commit()
+
+    resp_no_active = api_client.post(
+        f"/api/v1/applications/{app.id}/offer/decline",
+        headers=auth_headers(client_user),
+    )
+    assert resp_no_active.status_code == 409
+    assert resp_no_active.json()["error"]["code"] == "INVALID_TRANSITION"
 
 
 def test_sign_application_lifecycle(api_client, client_user, offer_application, db_session):

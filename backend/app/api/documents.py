@@ -4,7 +4,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -220,8 +220,16 @@ def download_document(
     if not file_path.is_file():
         raise ApiError(status_code=404, code=ErrorCode.NOT_FOUND, message="Файл документа не найден на диске")
 
-    return FileResponse(
-        path=str(file_path),
-        filename=doc.filename,
+    def file_streamer():
+        with open(file_path, "rb") as f:
+            while chunk := f.read(64 * 1024):
+                yield chunk
+
+    return StreamingResponse(
+        file_streamer(),
         media_type=doc.mime_type or "application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="{doc.filename}"',
+            "Content-Length": str(doc.size_bytes),
+        },
     )

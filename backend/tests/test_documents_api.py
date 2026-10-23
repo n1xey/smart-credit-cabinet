@@ -269,13 +269,15 @@ def test_list_and_download_documents_and_404_isolation(
     assert other_list_resp.status_code == 404
     assert other_list_resp.json()["error"]["code"] == "NOT_FOUND"
 
-    # 3. Скачивание владельцем
+    # 3. Скачивание владельцем со стримингом
     dl_resp = api_client.get(
         f"/api/v1/applications/{draft_application.id}/documents/{doc_id}/download",
         headers=auth_headers(client_user),
     )
     assert dl_resp.status_code == 200
     assert dl_resp.content == png_content
+    assert "attachment" in dl_resp.headers["Content-Disposition"]
+    assert dl_resp.headers["Content-Length"] == str(len(png_content))
 
     # 4. Скачивание оператором и админом разрешено
     op_dl_resp = api_client.get(

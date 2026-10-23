@@ -260,6 +260,17 @@ def get_offer(
             code=ErrorCode.NOT_FOUND,
             message="Активное предложение не найдено",
         )
+
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    valid_until = offer.valid_until
+    if valid_until.tzinfo is None:
+        valid_until = valid_until.replace(tzinfo=datetime.timezone.utc)
+    if valid_until < now_utc:
+        raise ApiError(
+            status_code=404,
+            code=ErrorCode.NOT_FOUND,
+            message="Срок действия кредитного предложения истёк",
+        )
     return OfferResponse.model_validate(offer)
 
 
@@ -365,7 +376,29 @@ def decline_offer(
             message=f"Отклонение предложения недопустимо в статусе {app.status}. Ожидается OFFER или COUNTER_OFFER",
         )
 
-    # 3. Переход в CANCELLED в транзакции
+    # 3. Проверка активного предложения и срока действия
+    offer = db.scalar(
+        select(Offer).where(Offer.application_id == app.id, Offer.state == "ACTIVE")
+    )
+    if offer is None:
+        raise ApiError(
+            status_code=409,
+            code=ErrorCode.INVALID_TRANSITION,
+            message="Активное кредитное предложение не найдено",
+        )
+
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    valid_until = offer.valid_until
+    if valid_until.tzinfo is None:
+        valid_until = valid_until.replace(tzinfo=datetime.timezone.utc)
+    if valid_until < now_utc:
+        raise ApiError(
+            status_code=409,
+            code=ErrorCode.INVALID_TRANSITION,
+            message="Срок действия кредитного предложения истёк",
+        )
+
+    # 4. Переход в CANCELLED в транзакции
     try:
         transition(
             session=db,
