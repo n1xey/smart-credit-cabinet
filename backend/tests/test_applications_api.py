@@ -5,9 +5,11 @@ import uuid
 import pytest
 
 from app.api.schemas.company import CompanyInput
-from app.enums import ApplicationStatus, LegalForm, Role
+from app.enums import ApplicationStatus, ErrorCode, LegalForm, Role
+from app.errors import ApiError
 from app.models.tables import Application, Company, Product, User
 from tests.conftest import _make_user, auth_headers
+
 
 
 @pytest.fixture
@@ -305,3 +307,43 @@ def test_cancel_application_and_history(api_client, client_with_company, seed_pr
     assert history[0]["reason_code"] == "DRAFT_CREATED"
     assert history[1]["to_status"] == "CANCELLED"
     assert history[1]["reason_code"] == "CLIENT_CANCELLED"
+
+
+def test_submit_application_handles_race_condition(api_client, client_with_company, seed_products, monkeypatch):
+    """При гонке (когда параллельный запрос успел перевести в SUBMITTED и transition бросает INVALID_TRANSITION),
+    обработчик откатывает транзакцию и возвращает 202 с текущими данными заявки."""
+    client, company = client_with_company
+    create_resp = api_client.post(
+        "/api/v1/applications",
+        json={
+            "product_code": "WORKING_CAPITAL",
+            "amount_rub": 1_000_000,
+            "term_months": 12,
+            "purpose": "Пополнение оборотных средств",
+            "revenue_12m_rub": 10_000_000,
+            "net_profit_12m_rub": 1_000_000,
+            "existing_monthly_payments_rub": 50_000,
+        },
+        headers=auth_headers(client),
+    )
+    app_id = create_resp.json()["id"]
+    key = "race-condition-key-12345"
+
+    import app.api.applications as apps_mod
+
+    def concurrent_transition(session, application, to_status, **kwargs):
+        # Симулируем, что параллельный запрос зафиксировал SUBMITTED и тот же ключ
+        application.status = "SUBMITTED"
+        application.idempotency_key = key
+        session.commit()
+        raise ApiError(status_code=409, code=ErrorCode.INVALID_TRANSITION, message="Переход недопустим")
+
+    monkeypatch.setattr(apps_mod, "transition", concurrent_transition)
+
+    resp = api_client.post(
+        f"/api/v1/applications/{app_id}/submit",
+        headers={**auth_headers(client), "Idempotency-Key": key},
+    )
+    assert resp.status_code == 202
+    assert resp.json()["status"] == "SUBMITTED"
+

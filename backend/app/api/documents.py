@@ -1,5 +1,7 @@
 """API загрузки и скачивания документов по кредитным заявкам."""
 import hashlib
+import re
+import urllib.parse
 import uuid
 from pathlib import Path
 
@@ -24,6 +26,42 @@ _SIGNATURES: dict[str, bytes] = {
     "image/jpeg": b"\xff\xd8\xff",
     "image/jpg": b"\xff\xd8\xff",
 }
+
+
+def sanitize_filename(filename: str | None) -> str:
+    """Очищает имя файла от path traversal, управляющих символов, кавычек и переводов строк."""
+    if not filename:
+        return "document"
+    # 1. Извлекаем только базовое имя (защита от path traversal ../)
+    base = Path(filename).name
+    # 2. Заменяем переводы строк, \0, кавычки и слэши на подчеркивание
+    cleaned = re.sub(r'[\r\n\0"\'\\]', "_", base)
+    # 3. Оставляем только печатные символы
+    cleaned = "".join(ch for ch in cleaned if ord(ch) >= 32 and ord(ch) != 127).strip()
+    if not cleaned or cleaned in (".", ".."):
+        return "document"
+    # 4. Ограничиваем длину 255 символами с сохранением расширения
+    if len(cleaned) > 255:
+        parts = cleaned.rsplit(".", 1)
+        if len(parts) == 2 and len(parts[1]) <= 10:
+            ext = "." + parts[1]
+            cleaned = parts[0][: 255 - len(ext)] + ext
+        else:
+            cleaned = cleaned[:255]
+    return cleaned
+
+
+def format_content_disposition(filename: str) -> str:
+    """Формирует безопасный заголовок Content-Disposition по RFC 6266 и RFC 5987."""
+    clean_name = sanitize_filename(filename)
+    # ASCII fallback без пробелов, кавычек и спецсимволов
+    ascii_name = re.sub(r"[^a-zA-Z0-9._-]", "_", clean_name)
+    if not ascii_name:
+        ascii_name = "document"
+    # RFC 5987 UTF-8 кодирование для поддержки любых языков и символов
+    encoded_name = urllib.parse.quote(clean_name, encoding="utf-8")
+    return f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{encoded_name}'
+
 
 
 def _get_client_application(db: Session, app_id: uuid.UUID, user_id: uuid.UUID) -> Application:
@@ -105,11 +143,9 @@ def upload_document(
             details=[{"field": "file", "message": "Недопустимый MIME-тип"}],
         )
 
-    # 4. Защита от Path Traversal: клиентское имя файла сохраняется только в метаданных БД
-    raw_filename = file.filename or "document"
-    safe_filename = Path(raw_filename).name
-    if not safe_filename or safe_filename in (".", ".."):
-        safe_filename = "document"
+    # 4. Защита от Path Traversal, инъекций заголовков и небезопасных символов
+    safe_filename = sanitize_filename(file.filename)
+
 
     doc_id = uuid.uuid4()
     app_upload_dir = settings.uploads_dir / str(app.id)
@@ -229,7 +265,8 @@ def download_document(
         file_streamer(),
         media_type=doc.mime_type or "application/octet-stream",
         headers={
-            "Content-Disposition": f'attachment; filename="{doc.filename}"',
+            "Content-Disposition": format_content_disposition(doc.filename),
             "Content-Length": str(doc.size_bytes),
         },
     )
+

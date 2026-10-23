@@ -37,9 +37,16 @@ log = logging.getLogger("app.api.applications")
 router = APIRouter(prefix="/applications", tags=["Applications"])
 
 
-def _get_user_application(db: Session, app_id: uuid.UUID, user_id: uuid.UUID) -> Application:
+def _get_user_application(
+    db: Session,
+    app_id: uuid.UUID,
+    user_id: uuid.UUID,
+    for_update: bool = False,
+) -> Application:
     """Возвращает заявку текущего пользователя или выбрасывает 404 (сокрытие чужих данных)."""
     stmt = select(Application).where(Application.id == app_id)
+    if for_update:
+        stmt = stmt.with_for_update()
     app = db.scalar(stmt)
     if app is None or app.created_by != user_id:
         raise ApiError(
@@ -48,6 +55,7 @@ def _get_user_application(db: Session, app_id: uuid.UUID, user_id: uuid.UUID) ->
             message="Заявка не найдена",
         )
     return app
+
 
 
 @router.post("", response_model=ApplicationResponse, status_code=status.HTTP_201_CREATED)
@@ -216,7 +224,7 @@ def patch_draft(
     db: Session = Depends(get_db),
 ) -> ApplicationResponse:
     """Частичное изменение черновика заявки."""
-    app = _get_user_application(db, id, current_user.user_id)
+    app = _get_user_application(db, id, current_user.user_id, for_update=True)
 
     # 1. Проверка If-Match только при наличии заголовка
     if if_match is not None:
@@ -306,7 +314,8 @@ def submit_application(
             details=[{"field": "Idempotency-Key", "message": "Длина ключа от 8 до 100 символов"}],
         )
 
-    app = _get_user_application(db, id, current_user.user_id)
+    # 0. Блокировка строки заявки для исключения гонок при параллельных запросах
+    app = _get_user_application(db, id, current_user.user_id, for_update=True)
     company = db.scalar(select(Company).where(Company.id == app.company_id))
 
     # 1. Проверка идемпотентности: тот же ключ по той же заявке возвращает 202
@@ -360,6 +369,14 @@ def submit_application(
         )
         db.commit()
         db.refresh(app)
+    except ApiError:
+        db.rollback()
+        # Если статус изменился параллельно, проверяем: не тот ли это ключ идемпотентности
+        recheck = db.scalar(select(Application).where(Application.id == app.id))
+        if recheck and recheck.idempotency_key == idempotency_key:
+            resp_data = build_application_response(recheck, company)
+            return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=resp_data.model_dump(mode="json"))
+        raise
     except IntegrityError:
         db.rollback()
         # Проверяем причину ошибки целостности (на случай параллельного запроса)
@@ -372,6 +389,9 @@ def submit_application(
             code=ErrorCode.IDEMPOTENCY_CONFLICT,
             message="Конфликт ключа идемпотентности при параллельной обработке",
         )
+    except Exception:
+        db.rollback()
+        raise
 
     resp_data = build_application_response(app, company)
     return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=resp_data.model_dump(mode="json"))
@@ -384,22 +404,27 @@ def cancel_application(
     db: Session = Depends(get_db),
 ) -> ApplicationResponse:
     """Отменить заявку клиентом (допустимо из DRAFT, NEEDS_INFO, OFFER, COUNTER_OFFER)."""
-    app = _get_user_application(db, id, current_user.user_id)
-    transition(
-        session=db,
-        application=app,
-        to_status=ApplicationStatus.CANCELLED,
-        actor_type=ActorType.CLIENT,
-        actor_id=str(current_user.user_id),
-        actor_role="CLIENT",
-        reason_code="CLIENT_CANCELLED",
-        comment="Заявка отменена клиентом",
-    )
-    db.commit()
-    db.refresh(app)
+    app = _get_user_application(db, id, current_user.user_id, for_update=True)
+    try:
+        transition(
+            session=db,
+            application=app,
+            to_status=ApplicationStatus.CANCELLED,
+            actor_type=ActorType.CLIENT,
+            actor_id=str(current_user.user_id),
+            actor_role="CLIENT",
+            reason_code="CLIENT_CANCELLED",
+            comment="Заявка отменена клиентом",
+        )
+        db.commit()
+        db.refresh(app)
+    except Exception:
+        db.rollback()
+        raise
 
     company = db.scalar(select(Company).where(Company.id == app.company_id))
     return build_application_response(app, company)
+
 
 
 @router.get("/{id}/history", response_model=list[StatusHistoryItemResponse])

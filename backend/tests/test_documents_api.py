@@ -309,3 +309,57 @@ def test_list_and_download_documents_and_404_isolation(
         headers=auth_headers(client_user),
     )
     assert not_found_resp.status_code == 404
+
+
+def test_upload_and_download_sanitizes_filename_and_rfc5987(api_client, client_user, draft_application):
+    """Проверка экранирования имени файла от инъекций CRLF/кавычек и RFC 5987 заголовка."""
+    # 1. Загрузка файла с попыткой CRLF injection и кавычек в имени
+    pdf_content = b"%PDF-1.4" + b" sample pdf content"
+    unsafe_name = "evil\r\nInjected-Header: yes\"file.pdf"
+    upload_resp = api_client.post(
+        f"/api/v1/applications/{draft_application.id}/documents",
+        data={"doc_type": DocType.FINANCIAL_STATEMENT.value},
+        files={"file": (unsafe_name, io.BytesIO(pdf_content), "application/pdf")},
+        headers=auth_headers(client_user),
+    )
+    assert upload_resp.status_code == 201
+    doc_data = upload_resp.json()
+    clean_filename = doc_data["filename"]
+
+    # Имя не должно содержать переводов строк и кавычек
+    assert "\r" not in clean_filename
+    assert "\n" not in clean_filename
+    assert '"' not in clean_filename
+
+    # Скачивание файла: проверяем заголовок Content-Disposition
+    dl_resp = api_client.get(
+        f"/api/v1/applications/{draft_application.id}/documents/{doc_data['id']}/download",
+        headers=auth_headers(client_user),
+    )
+    assert dl_resp.status_code == 200
+    cd = dl_resp.headers["Content-Disposition"]
+    assert "attachment;" in cd
+    assert 'filename="' in cd
+    assert "filename*=UTF-8''" in cd
+    # Заголовок не должен содержать \r или \n
+    assert "\r" not in cd and "\n" not in cd
+
+    # 2. Загрузка с кириллическим именем
+    cyrillic_name = "выписка_2026.pdf"
+    upload_cyrillic_resp = api_client.post(
+        f"/api/v1/applications/{draft_application.id}/documents",
+        data={"doc_type": DocType.OTHER.value},
+        files={"file": (cyrillic_name, io.BytesIO(pdf_content), "application/pdf")},
+        headers=auth_headers(client_user),
+    )
+    assert upload_cyrillic_resp.status_code == 201
+    cyrillic_doc = upload_cyrillic_resp.json()
+
+    cyrillic_dl = api_client.get(
+        f"/api/v1/applications/{draft_application.id}/documents/{cyrillic_doc['id']}/download",
+        headers=auth_headers(client_user),
+    )
+    assert cyrillic_dl.status_code == 200
+    cyrillic_cd = cyrillic_dl.headers["Content-Disposition"]
+    assert "filename*=UTF-8''%D0%B2%D1%8B%D0%BF%D0%B8%D1%81%D0%BA%D0%B0_2026.pdf" in cyrillic_cd
+
