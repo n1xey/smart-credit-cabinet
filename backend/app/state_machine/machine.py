@@ -23,6 +23,7 @@ from app.state_machine.guards import (
 )
 from app.state_machine.jobs import enqueue_transition_job
 from app.state_machine.transitions import (
+    SYSTEM_TARGET_STATUSES,
     TERMINAL_STATUSES,
     get_allowed_targets,
     get_transition_rule,
@@ -64,13 +65,33 @@ def transition(
     # Нормализация входных перечислений
     target_status = ApplicationStatus(to_status) if isinstance(to_status, str) else to_status
     normalized_actor = ActorType(actor_type) if isinstance(actor_type, str) else actor_type
+    # 1. Блокировка строки на уровне БД (SELECT ... FOR UPDATE) для предотвращения гонок
+    if application.id is not None:
+        locked_app = (
+            session.query(Application)
+            .filter(Application.id == application.id)
+            .with_for_update()
+            .first()
+        )
+        if locked_app is not None:
+            application = locked_app
+
     current_status = ApplicationStatus(application.status)
 
-    # 1. Проверка терминального статуса: из финальных статусов переходы запрещены
+    # 2. Проверка терминального статуса: из финальных статусов переходы запрещены
     validate_terminal_status(application)
 
-    # 2. Идемпотентность воркера: если заявка уже в целевом статусе
+    # 3. Проверка оптимистичной блокировки (If-Match) ДО любого раннего возврата
+    validate_optimistic_lock(application, expected_version)
+
+    # 4. Идемпотентность воркера: подтверждённый повтор легитимного системного шага
     if current_status == target_status and normalized_actor == ActorType.SYSTEM and idempotent:
+        if target_status not in SYSTEM_TARGET_STATUSES:
+            raise ApiError(
+                status_code=409,
+                code=ErrorCode.INVALID_TRANSITION,
+                message=f"Системный переход в статус '{target_status.value}' не предусмотрен графом",
+            )
         log.info(
             "state_machine.idempotent_skip",
             extra={
@@ -80,9 +101,6 @@ def transition(
             },
         )
         return application
-
-    # 3. Проверка оптимистичной блокировки
-    validate_optimistic_lock(application, expected_version)
 
     # 4. Проверка лимита раундов уточнений (MAX_INFO_ROUNDS -> MANUAL_REVIEW)
     effective_target_status = target_status
@@ -211,6 +229,17 @@ def take_in_review(
     Если заявка уже взята другим оператором, выбрасывается 409 CONFLICT.
     Повторное взятие тем же оператором идемпотентно.
     """
+    # 0. Блокировка строки на уровне БД (SELECT ... FOR UPDATE) для предотвращения гонок
+    if application.id is not None:
+        locked_app = (
+            session.query(Application)
+            .filter(Application.id == application.id)
+            .with_for_update()
+            .first()
+        )
+        if locked_app is not None:
+            application = locked_app
+
     # 1. Проверка роли оператора
     if operator_role not in (Role.OPERATOR.value, Role.ADMIN.value):
         raise ApiError(
@@ -227,7 +256,10 @@ def take_in_review(
             message=f"Взять в работу можно только заявку в статусе MANUAL_REVIEW (текущий: '{application.status}')",
         )
 
-    # 3. Проверка назначения на другого оператора
+    # 3. Проверка оптимистичной блокировки (If-Match) ДО любого возврата
+    validate_optimistic_lock(application, expected_version)
+
+    # 4. Проверка назначения на другого оператора
     op_uuid = uuid.UUID(str(operator_id)) if isinstance(operator_id, str) else operator_id
     if application.assigned_operator_id is not None:
         if application.assigned_operator_id != op_uuid:
@@ -236,11 +268,8 @@ def take_in_review(
                 code=ErrorCode.CONFLICT,
                 message="Заявка уже взята в работу другим оператором",
             )
-        # Идемпотентный возврат, если уже назначена этому оператору
+        # Идемпотентный возврат, если уже назначена этому оператору (версия проверена)
         return application
-
-    # 4. Проверка оптимистичной блокировки
-    validate_optimistic_lock(application, expected_version)
 
     # 5. Назначение и версионирование
     now_utc = datetime.now(timezone.utc)
@@ -287,16 +316,23 @@ def get_allowed_transitions(
 
     normalized_actor = ActorType(actor_type) if isinstance(actor_type, str) else actor_type
 
-    # Для клиента проверяем владение
+    # 1. Проверка роли пользователя
     if normalized_actor == ActorType.CLIENT:
+        if actor_role is not None and actor_role != Role.CLIENT.value:
+            return []
         if actor_id is None or str(application.created_by) != str(actor_id):
             return []
-
-    # Для оператора на MANUAL_REVIEW проверяем назначение
-    if current_status == ApplicationStatus.MANUAL_REVIEW and normalized_actor == ActorType.OPERATOR:
-        if application.assigned_operator_id is None:
+    elif normalized_actor == ActorType.OPERATOR:
+        if actor_role is not None and actor_role not in (Role.OPERATOR.value, Role.ADMIN.value):
             return []
-        if str(application.assigned_operator_id) != str(actor_id):
+        # Для оператора на MANUAL_REVIEW проверяем назначение
+        if current_status == ApplicationStatus.MANUAL_REVIEW:
+            if application.assigned_operator_id is None:
+                return []
+            if str(application.assigned_operator_id) != str(actor_id):
+                return []
+    elif normalized_actor == ActorType.SYSTEM:
+        if actor_role is not None:
             return []
 
     return get_allowed_targets(current_status, normalized_actor)

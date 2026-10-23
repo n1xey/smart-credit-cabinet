@@ -761,3 +761,135 @@ def test_get_allowed_transitions(
     assert get_allowed_transitions(app, ActorType.CLIENT, client_user.id) == []
     assert get_allowed_transitions(app, ActorType.OPERATOR, operator_user.id) == []
     assert get_allowed_transitions(app, ActorType.SYSTEM) == []
+
+
+# ---------------------------------------------------------------------------
+# 13. Тесты на замечания ревью (Review Findings)
+# ---------------------------------------------------------------------------
+def test_system_idempotency_invalid_target_and_version_conflict(
+    db_session: Session, company: Company, client_user: User, product: Product
+):
+    """Идемпотентность воркера не должна пропускать невалидные системные статусы (DRAFT) или конфликты версий."""
+    app = create_application(db_session, company, client_user, product, status=ApplicationStatus.DRAFT, version=1)
+
+    # 1. Системный вызов DRAFT -> DRAFT не должен молча проходить
+    with pytest.raises(ApiError) as exc_info:
+        transition(
+            session=db_session,
+            application=app,
+            to_status=ApplicationStatus.DRAFT,
+            actor_type=ActorType.SYSTEM,
+            idempotent=True,
+        )
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.code == ErrorCode.INVALID_TRANSITION
+
+    # 2. Повтор с устаревшей версией даёт 409 VERSION_CONFLICT
+    app.status = ApplicationStatus.ENRICHMENT.value
+    app.version = 3
+    db_session.commit()
+
+    with pytest.raises(ApiError) as exc_info:
+        transition(
+            session=db_session,
+            application=app,
+            to_status=ApplicationStatus.ENRICHMENT,
+            actor_type=ActorType.SYSTEM,
+            expected_version=1,
+            idempotent=True,
+        )
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.code == ErrorCode.VERSION_CONFLICT
+
+
+def test_take_in_review_repeated_with_outdated_version_raises_409(
+    db_session: Session, company: Company, client_user: User, operator_user: User, product: Product
+):
+    """Повторный take_in_review тем же оператором с устаревшим If-Match должен давать 409 VERSION_CONFLICT."""
+    app = create_application(
+        db_session, company, client_user, product, status=ApplicationStatus.MANUAL_REVIEW, version=1
+    )
+
+    # Первый take -> version становится 2
+    take_in_review(db_session, app, operator_id=operator_user.id, operator_role=Role.OPERATOR.value, expected_version=1)
+    assert app.version == 2
+    assert app.assigned_operator_id == operator_user.id
+
+    # Повторный take с устаревшим If-Match (expected_version=1) обязан выбросить 409 VERSION_CONFLICT
+    with pytest.raises(ApiError) as exc_info:
+        take_in_review(
+            db_session,
+            app,
+            operator_id=operator_user.id,
+            operator_role=Role.OPERATOR.value,
+            expected_version=1,
+        )
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.code == ErrorCode.VERSION_CONFLICT
+
+    # Повторный take с актуальным If-Match (expected_version=2) успешен
+    res = take_in_review(
+        db_session,
+        app,
+        operator_id=operator_user.id,
+        operator_role=Role.OPERATOR.value,
+        expected_version=2,
+    )
+    assert res.version == 2
+
+
+def test_get_allowed_transitions_respects_actor_role(
+    db_session: Session, company: Company, client_user: User, operator_user: User, product: Product
+):
+    """get_allowed_transitions должен валидировать actor_role и не возвращать действия не своей роли."""
+    app = create_application(
+        db_session,
+        company,
+        client_user,
+        product,
+        status=ApplicationStatus.MANUAL_REVIEW,
+        assigned_operator_id=operator_user.id,
+    )
+
+    # 1. Попытка запросить действия оператора с ролью CLIENT -> пустой список
+    res_client_role = get_allowed_transitions(
+        app,
+        actor_type=ActorType.OPERATOR,
+        actor_id=operator_user.id,
+        actor_role=Role.CLIENT.value,
+    )
+    assert res_client_role == []
+
+    # 2. Запрос с корректной ролью OPERATOR -> список действий
+    res_operator_role = get_allowed_transitions(
+        app,
+        actor_type=ActorType.OPERATOR,
+        actor_id=operator_user.id,
+        actor_role=Role.OPERATOR.value,
+    )
+    assert set(res_operator_role) == {
+        ApplicationStatus.OFFER,
+        ApplicationStatus.COUNTER_OFFER,
+        ApplicationStatus.NEEDS_INFO,
+        ApplicationStatus.REJECTED,
+    }
+
+    # 3. Черновик: клиент с ролью OPERATOR не может совершать клиентские действия
+    app.status = ApplicationStatus.DRAFT.value
+    res_wrong_client = get_allowed_transitions(
+        app,
+        actor_type=ActorType.CLIENT,
+        actor_id=client_user.id,
+        actor_role=Role.OPERATOR.value,
+    )
+    assert res_wrong_client == []
+
+    # 4. Черновик: клиент с ролью CLIENT получает свои переходы
+    res_correct_client = get_allowed_transitions(
+        app,
+        actor_type=ActorType.CLIENT,
+        actor_id=client_user.id,
+        actor_role=Role.CLIENT.value,
+    )
+    assert set(res_correct_client) == {ApplicationStatus.SUBMITTED, ApplicationStatus.CANCELLED}
+

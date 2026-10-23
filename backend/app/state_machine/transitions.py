@@ -25,6 +25,22 @@ TERMINAL_STATUSES: frozenset[ApplicationStatus] = frozenset(
     }
 )
 
+# Статусы, в которые может переводить воркер (SYSTEM)
+SYSTEM_TARGET_STATUSES: frozenset[ApplicationStatus] = frozenset(
+    {
+        ApplicationStatus.DATA_CHECK,
+        ApplicationStatus.NEEDS_INFO,
+        ApplicationStatus.ENRICHMENT,
+        ApplicationStatus.SCORING,
+        ApplicationStatus.OFFER,
+        ApplicationStatus.COUNTER_OFFER,
+        ApplicationStatus.MANUAL_REVIEW,
+        ApplicationStatus.SIGNING,
+        ApplicationStatus.REJECTED,
+        ApplicationStatus.EXPIRED,
+    }
+)
+
 # Полный список допустимых переходов согласно docs/STATE_MACHINE.md
 ALLOWED_TRANSITIONS: list[TransitionRule] = [
     # DRAFT
