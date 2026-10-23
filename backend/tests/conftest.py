@@ -9,8 +9,14 @@ SQLite не поддерживает JSONB и PostgreSQL-специфичные 
 import os
 import uuid
 
+import tempfile
+from pathlib import Path
+
 # Для тестов устанавливаем дефолтный JWT_SECRET, чтобы тесты не зависели от внешнего окружения
 os.environ.setdefault("JWT_SECRET", "test-secret-key-with-at-least-32-characters-for-safety")
+_TEST_UPLOADS = Path(tempfile.gettempdir()) / "scc_test_uploads"
+_TEST_UPLOADS.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("UPLOADS_DIR", str(_TEST_UPLOADS))
 
 import pytest
 from fastapi.testclient import TestClient
