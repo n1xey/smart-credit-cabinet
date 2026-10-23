@@ -71,14 +71,14 @@ export default function Wizard() {
           steps={[`${p.min_term_months} мес.`, `${p.max_term_months} мес.`]} />
       </div><Gap size={24} />
       <Hint>Примерный платёж в месяц</Hint><Typography.TitleResponsive tag="div" view="medium" font="system" weight="bold">≈ {money(payment(amount, term, rate))}</Typography.TitleResponsive>
-      <Hint>При ставке {rate}% годовых. Точные условия банк назовёт после проверки: ставка зависит от оценки заявки.</Hint></div>}
+      <Hint>При ставке {rate}% годовых. Ставка складывается из ключевой ставки Банка России и надбавки банка за продукт; итоговую банк назовёт после проверки — она зависит от оценки заявки.</Hint></div>}
     {step === 2 && <div className="card"><H2>Финансы за последние 12 месяцев</H2><Hint>Введите примерные суммы — по ним мы оценим, какой платёж вам по силам.</Hint><Gap size={16} />
       <div className="stack">
         {FIN.map(([k, l]) => <AmountInput key={k} label={l} block currency="RUR" minority={1} integersOnly positiveOnly={k === 'existing_monthly_payments_rub'}
           value={fin[k] === '' ? null : +fin[k]} onChange={(_, { value }) => setFin({ ...fin, [k]: value === null ? '' : String(value) })} />)}
         <Textarea label="На что нужны деньги (по желанию)" aria-label="На что нужны деньги (по желанию)" block autosize minRows={2} maxLength={500} showCounter value={fin.purpose} onChange={(_, { value }) => setFin({ ...fin, purpose: value })} />
       </div></div>}
-    {step === 3 && <div className="card"><H2>Документы</H2>
+    {step === 3 && <div className="card"><H2>Документы (необязательно)</H2><Hint>Можно пропустить этот шаг: если документ понадобится, банк запросит его в кабинете.</Hint><Gap size={16} />
       {(p?.required_documents.length ?? 0) === 0 ? <Hint>Для этого продукта документы не нужны.</Hint> : <div className="stack">{p!.required_documents.map(t => <div key={t}>
         <Typography.Text view="primary-medium" weight="medium" tag="div">{DOC_NAMES[t] ?? t}{docs.some(d => d.doc_type === t) && <span className="muted"> — загружено ✓</span>}</Typography.Text><Gap size={8} />
         <Attach buttonContent="Выбрать файл" noFileText="Файл не выбран" onChange={(_, { files }) => files[0] && upload(t, files[0])} /></div>)}</div>}</div>}
