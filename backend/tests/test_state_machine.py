@@ -801,6 +801,22 @@ def test_system_idempotency_invalid_target_and_version_conflict(
     assert exc_info.value.status_code == 409
     assert exc_info.value.code == ErrorCode.VERSION_CONFLICT
 
+    # 3. Системный вызов MANUAL_REVIEW -> MANUAL_REVIEW обязан отклоняться с 409
+    app.status = ApplicationStatus.MANUAL_REVIEW.value
+    app.version = 4
+    db_session.commit()
+
+    with pytest.raises(ApiError) as exc_info:
+        transition(
+            session=db_session,
+            application=app,
+            to_status=ApplicationStatus.MANUAL_REVIEW,
+            actor_type=ActorType.SYSTEM,
+            idempotent=True,
+        )
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.code == ErrorCode.INVALID_TRANSITION
+
 
 def test_take_in_review_repeated_with_outdated_version_raises_409(
     db_session: Session, company: Company, client_user: User, operator_user: User, product: Product

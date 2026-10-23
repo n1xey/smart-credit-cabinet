@@ -25,7 +25,9 @@ TERMINAL_STATUSES: frozenset[ApplicationStatus] = frozenset(
     }
 )
 
-# Статусы, в которые может переводить воркер (SYSTEM)
+# Статусы, для которых допустим повтор системного шага воркером (SYSTEM).
+# MANUAL_REVIEW исключён: self-transition отсутствует, повторяемых фоновых задач воркера в этом статусе нет.
+# Финальные статусы (REJECTED, EXPIRED) блокируются проверкой терминальных статусов.
 SYSTEM_TARGET_STATUSES: frozenset[ApplicationStatus] = frozenset(
     {
         ApplicationStatus.DATA_CHECK,
@@ -34,10 +36,7 @@ SYSTEM_TARGET_STATUSES: frozenset[ApplicationStatus] = frozenset(
         ApplicationStatus.SCORING,
         ApplicationStatus.OFFER,
         ApplicationStatus.COUNTER_OFFER,
-        ApplicationStatus.MANUAL_REVIEW,
         ApplicationStatus.SIGNING,
-        ApplicationStatus.REJECTED,
-        ApplicationStatus.EXPIRED,
     }
 )
 
