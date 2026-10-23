@@ -35,11 +35,15 @@ const SEED: [string, string, 'OOO' | 'IP', string, string, J][] = [
   ['0000006066', 'ООО «Вектор Сервис»', 'OOO', '47', 'REJECTED', { product_code: 'WORKING_CAPITAL', amount_rub: 1_500_000, term_months: 12, revenue_12m_rub: 20_000_000, net_profit_12m_rub: 2_000_000, existing_monthly_payments_rub: 50_000, knockouts: ['BKI_OVERDUE_90'] }],
   ['000000070777', 'ИП Соколов А.', 'IP', '56', 'OFFER', { product_code: 'EXPRESS', amount_rub: 400_000, term_months: 6, revenue_12m_rub: 5_000_000, net_profit_12m_rub: 2_000_000, existing_monthly_payments_rub: 0, score: 91, grade: 'A' }],
 ];
+const AGE_MONTHS: Record<string, number> = {"0000001011":72,"0000002022":48,"0000003033":30,"0000004044":14,"0000005055":40,"0000006066":36,"000000070777":24}; // возраст бизнеса из docs/SCORING.md
+const regDate = (inn: string) => { const d = new Date(); d.setMonth(d.getMonth() - (AGE_MONTHS[inn] ?? 24)); return d.toISOString().slice(0, 10); };
+const ageText = (m: number) => m < 12 ? `${m} мес.` : m % 12 ? `${(m / 12).toFixed(1).replace(".", ",")} года` : `${m / 12} ${m / 12 < 5 ? "года" : "лет"}`;
+const address = (i: number) => "г. Москва, ул. Примерная, д. " + (i + 1);
 const companies = new Map<string, J>(); // email -> компания
 const apps: J[] = [];
 const rate = (code: string) => PRODUCTS.find(p => p.code === code)!.base_rate_percent;
 function factors(a: J) {
-  return [['Возраст бизнеса', '4 года', 10, 15], ['Покрытие запроса выручкой', (a.revenue_12m_rub / a.amount_rub).toFixed(1), 15, 20], ['Рентабельность', Math.round(a.net_profit_12m_rub / a.revenue_12m_rub * 100) + '%', 10, 15],
+  return [['Возраст бизнеса', ageText(AGE_MONTHS[a.inn] ?? 24), (AGE_MONTHS[a.inn] ?? 24) >= 36 ? 15 : 10, 15], ['Покрытие запроса выручкой', (a.revenue_12m_rub / a.amount_rub).toFixed(1), 15, 20], ['Рентабельность', Math.round(a.net_profit_12m_rub / a.revenue_12m_rub * 100) + '%', 10, 15],
     ['Долговая нагрузка', Math.round(a.existing_monthly_payments_rub / (a.revenue_12m_rub / 12) * 100) + '%', 15, 15], ['Кредитная история', a.grade === 'D' ? '430' : '780', a.grade === 'D' ? 0 : 20, 20], ['Статус и флаги ФНС', 'нет флагов', 5, 5], ['Отраслевой риск', 'средний', 6, 10]]
     .map(([factor, value, points, max_points]) => ({ factor, value, points, max_points, comment: '' }));
 }
@@ -53,14 +57,15 @@ function makeOffer(a: J, kind: 'ORIGINAL' | 'COUNTER', amount: number, term: num
 }
 for (const [i, [inn, name, legal_form, okved, status, d]] of SEED.entries()) {
   const email = `client${i + 1}@demo.local`;
-  companies.set(email, { id: uid(), inn, name, legal_form, okved, address: 'г. Москва, ул. Примерная, д. ' + (i + 1), registration_date: '2021-03-15' });
-  const a: J = { id: uid(), owner: email, company_name: name, status: 'DRAFT', version: 1, docs: [], history: [], submitted_at: ago(60), updated_at: ago(60), ...d };
+  companies.set(email, { id: uid(), inn, name, legal_form, okved, address: address(i), registration_date: regDate(inn) });
+  const a: J = { id: uid(), owner: email, inn, company_name: name, status: 'DRAFT', version: 1, docs: [], history: [], submitted_at: ago(60), updated_at: ago(60), ...d };
   a.history.push({ to_status: 'SUBMITTED', actor_type: 'CLIENT', created_at: ago(60) });
   for (const s of ['DATA_CHECK', 'ENRICHMENT', 'SCORING']) a.history.push({ from_status: a.history.at(-1).to_status, to_status: s, actor_type: 'SYSTEM', created_at: ago(59) });
   if (status === 'OFFER') makeOffer(a, 'ORIGINAL', a.amount_rub, a.term_months, rate(a.product_code));
   if (status === 'COUNTER_OFFER') makeOffer(a, 'COUNTER', d.offer[0], d.offer[1], d.offer[2], 'С учётом текущей платёжной нагрузки мы можем одобрить меньшую сумму.');
   if (status === 'NEEDS_INFO') a.info = { id: uid(), round: 1, requested_by: 'SYSTEM', created_at: ago(58), items: [{ code: 'DOCUMENT_MISSING', message: 'Приложите счёт поставщика на оборудование', doc_type: 'SUPPLIER_INVOICE' }] };
   if (status === 'REJECTED') a.reason_codes = d.knockouts;
+  if (status === 'COUNTER_OFFER') a.reason_codes = ['AMOUNT_REDUCED'];
   a.status = 'SCORING'; move(a, status, 'SYSTEM', status === 'MANUAL_REVIEW' ? 'Группа D: нужна проверка специалистом' : undefined);
   apps.push(a);
 }
@@ -82,7 +87,7 @@ function pipeline(a: J) {
 const users = new Map<string, J>([['operator@demo.local', { role: 'OPERATOR', full_name: 'Оператор Демо' }], ['admin@demo.local', { role: 'ADMIN', full_name: 'Админ Демо' }],
   ...SEED.map((_, i) => [`client${i + 1}@demo.local`, { role: 'CLIENT', full_name: `Клиент ${i + 1}` }] as [string, J])]);
 const me = (email: string) => ({ id: email, email, ...users.get(email) });
-const view = (a: J) => { const { owner, docs, offer, info, history, score, grade, knockouts, submitKey, ...rest } = a;
+const view = (a: J) => { const { owner, inn, docs, offer, info, history, score, grade, knockouts, submitKey, ...rest } = a;
   return { ...rest, status_title: TEXT[a.status][0], status_description: TEXT[a.status][1], next_action: NEXT[a.status] ?? 'NONE', reason_messages: (a.reason_codes ?? []).map((c: string) => REASON[c] ?? c) }; };
 const opView = (a: J) => ({ ...view(a), company: [...companies.entries()].find(([e]) => e === a.owner)?.[1], documents: a.docs, history: a.history,
   enrichment: { bki: { bki_score: a.grade === 'D' ? 430 : 780, overdue_active_days: 0, overdue_closed_12m_count: a.grade === 'D' ? 2 : 0 }, egrul: { registry_status: 'ACTIVE', registry_flags: [] } },
@@ -105,7 +110,7 @@ export async function mockFetch(input: string, init: RequestInit = {}): Promise<
   const body = typeof init.body === 'string' ? JSON.parse(init.body) : init.body;
   const user = users.get(email);
   if (path === '/auth/login') { const u = users.get(body.email?.trim().toLowerCase()); return u && body.password === 'Demo12345!' ? res(200, { access_token: 'mock:' + body.email.trim().toLowerCase(), token_type: 'bearer', user: me(body.email.trim().toLowerCase()) }) : fail(401, 'UNAUTHORIZED', 'Неверный email или пароль. В демо пароль у всех учёток: Demo12345!'); }
-  if (path === '/auth/register') { const e = body.email.trim().toLowerCase(); if (users.has(e)) return fail(409, 'CONFLICT', 'Этот email уже зарегистрирован'); users.set(e, { role: 'CLIENT', full_name: body.full_name }); return res(201, { access_token: 'mock:' + e, token_type: 'bearer', user: me(e) }); }
+  // регистрации нет: кабинет для действующих клиентов банка (MVP.md, «Авторизация»)
   if (path === '/products') return res(200, PRODUCTS);
   if (!user) return fail(401, 'UNAUTHORIZED', 'Войдите заново');
   if (path === '/auth/me') return res(200, me(email));
@@ -113,12 +118,12 @@ export async function mockFetch(input: string, init: RequestInit = {}): Promise<
   if (path === '/products/recommend') { const code = { WORKING_CAPITAL: 'WORKING_CAPITAL', EQUIPMENT: 'EQUIPMENT', URGENT_CASH: 'EXPRESS' }[body.purpose as string] ?? 'WORKING_CAPITAL';
     return res(200, { product_code: code, source: 'RULES', explanation: code === 'EXPRESS' ? 'Решение быстрее всего и без документов, если бизнесу больше года.' : code === 'EQUIPMENT' ? 'Длинный срок до 5 лет и ставка ниже — платёж будет комфортнее.' : 'Подходит для закупок и текущих расходов, срок до 2 лет.' }); }
   if (path === '/company') { if (method === 'PUT') { companies.set(email, { id: uid(), ...body }); return res(200, companies.get(email)); } return companies.has(email) ? res(200, companies.get(email)) : fail(404, 'NOT_FOUND', 'Профиль компании ещё не создан'); }
-  if (path === '/company/lookup') { const s = SEED.find(x => x[0] === url.searchParams.get('inn')); return s ? res(200, { inn: s[0], name: s[1], legal_form: s[2], okved: s[3], address: 'г. Москва, ул. Примерная, д. 1', registration_date: '2021-03-15' }) : fail(404, 'NOT_FOUND', 'ИНН не найден в реестре. Попробуйте ИНН из демо-данных, например 0000001011'); }
+  if (path === '/company/lookup') { const i = SEED.findIndex(x => x[0] === url.searchParams.get('inn')); const s = SEED[i]; return s ? res(200, { inn: s[0], name: s[1], legal_form: s[2], okved: s[3], address: address(i), registration_date: regDate(s[0]) }) : fail(404, 'NOT_FOUND', 'ИНН не найден в реестре. Попробуйте ИНН из демо-данных, например 0000001011'); }
   if (path === '/feed') return res(200, [{ id: 'f1', tag: 'TIP', title: 'Как банк считает платёж', summary: 'Ежемесячный платёж зависит от суммы, срока и ставки. Чем дольше срок, тем меньше платёж.' },
     { id: 'f2', tag: 'EDUCATION', title: 'Какие документы готовить', summary: 'Для оборотного кредита достаточно отчётности за последний год.' }, { id: 'f3', tag: 'STATUS', title: 'Решение онлайн', summary: 'Статус заявки обновляется сам — не нужно звонить в банк.' }]);
   if (path === '/applications' && method === 'GET') return page(url, apps.filter(a => a.owner === email).sort((x, y) => y.updated_at.localeCompare(x.updated_at)).map(view));
   if (path === '/applications' && method === 'POST') { if (!companies.has(email)) return fail(422, 'VALIDATION_ERROR', 'Сначала заполните профиль компании');
-    const a: J = { id: uid(), owner: email, company_name: companies.get(email).name, status: 'DRAFT', version: 1, docs: [], history: [], updated_at: now(), ...body }; apps.push(a); return res(201, view(a)); }
+    const a: J = { id: uid(), owner: email, inn: companies.get(email).inn, company_name: companies.get(email).name, status: 'DRAFT', version: 1, docs: [], history: [], updated_at: now(), ...body }; apps.push(a); return res(201, view(a)); }
   if (path === '/operator/queue') { if (user.role === 'CLIENT') return fail(403, 'FORBIDDEN', 'Нет доступа'); const st = url.searchParams.get('status'); const mine = url.searchParams.get('assigned_to_me') === 'true';
     return page(url, apps.filter(a => a.status !== 'DRAFT' && (!st || a.status === st) && (!mine || a.assigned_operator_id === email)).sort((x, y) => y.updated_at.localeCompare(x.updated_at)).map(view)); }
   const m = path.match(/^\/(operator\/)?applications\/([^/]+)(?:\/(.+))?$/); if (!m) return fail(404, 'NOT_FOUND', 'Нет такого адреса в демо-моке');
