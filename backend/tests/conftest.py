@@ -37,7 +37,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.auth.security import create_access_token, hash_password
 from app.enums import Role
 from app.main import create_app
-from app.models.tables import User
+from app.models.tables import Product, User
 
 
 # ---------------------------------------------------------------------------
@@ -319,3 +319,54 @@ def auth_headers(user: User) -> dict:
     """Возвращает заголовок Authorization с валидным JWT для данного пользователя."""
     token = create_access_token(user.id, user.role, user.email)
     return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+def seed_products(db_session: Session) -> list[Product]:
+    """Заполняет базу данных тремя стандартными продуктами кредитования."""
+    products = [
+        Product(
+            code="WORKING_CAPITAL",
+            name="Оборотный кредит",
+            description="Пополнение оборотных средств, закупка товаров и сырья",
+            min_amount_rub=300_000,
+            max_amount_rub=10_000_000,
+            min_term_months=3,
+            max_term_months=24,
+            base_rate_percent=18.0,
+            auto_limit_rub=3_000_000,
+            min_business_age_months=0,
+            required_documents=["FINANCIAL_STATEMENT"],
+        ),
+        Product(
+            code="EQUIPMENT",
+            name="Кредит на оборудование",
+            description="Приобретение оборудования и модернизация основных средств",
+            min_amount_rub=500_000,
+            max_amount_rub=15_000_000,
+            min_term_months=12,
+            max_term_months=60,
+            base_rate_percent=16.5,
+            auto_limit_rub=5_000_000,
+            min_business_age_months=0,
+            required_documents=["FINANCIAL_STATEMENT", "SUPPLIER_INVOICE"],
+        ),
+        Product(
+            code="EXPRESS",
+            name="Экспресс-кредит",
+            description="Быстрое решение без залога до 1,5 млн руб.",
+            min_amount_rub=100_000,
+            max_amount_rub=1_500_000,
+            min_term_months=3,
+            max_term_months=12,
+            base_rate_percent=21.0,
+            auto_limit_rub=1_500_000,
+            min_business_age_months=12,
+            required_documents=[],
+        ),
+    ]
+    for p in products:
+        db_session.add(p)
+    db_session.commit()
+    return products
+
