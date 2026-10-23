@@ -8,7 +8,9 @@ export type Role = 'CLIENT' | 'OPERATOR' | 'ADMIN';
 export interface User { id: string; email: string; full_name?: string; role: Role }
 export interface Product { code: string; name: string; description?: string; min_amount_rub: number; max_amount_rub: number; min_term_months: number; max_term_months: number; base_rate_percent: number; auto_limit_rub?: number; required_documents: string[] }
 export interface Offer { kind: 'ORIGINAL' | 'COUNTER'; amount_rub: number; term_months: number; rate_percent: number; monthly_payment_rub: number; valid_until: string; explanation?: string }
-export interface Application { id: string; status: string; product_code: string; amount_rub: number; term_months: number; company_name?: string; updated_at: string; version?: number; status_title?: string; status_description?: string; next_action?: 'NONE' | 'FILL_DRAFT' | 'ANSWER_INFO_REQUEST' | 'REVIEW_OFFER' | 'SIGN'; reason_messages?: string[]; expires_at?: string; purpose?: string; revenue_12m_rub?: number; net_profit_12m_rub?: number; existing_monthly_payments_rub?: number }
+export interface Application { id: string; status: string; product_code: string; amount_rub: number; term_months: number; company_name?: string; updated_at: string; version?: number; status_title?: string; status_description?: string; next_action?: 'NONE' | 'FILL_DRAFT' | 'ANSWER_INFO_REQUEST' | 'REVIEW_OFFER' | 'SIGN'; reason_messages?: string[]; expires_at?: string; purpose?: string; revenue_12m_rub?: number; net_profit_12m_rub?: number; existing_monthly_payments_rub?: number; reason_codes?: string[]
+  // Ожидается в контракте (SCORING.md, «Объяснение решения клиенту»), PR contract ещё не сделан: пока поле может отсутствовать
+  decision_highlights?: string[] }
 export interface HistoryItem { from_status?: string; to_status: string; actor_type?: string; comment?: string; created_at: string }
 export interface Company { inn: string; name: string; legal_form: 'OOO' | 'IP'; registration_date?: string; okved?: string; address?: string }
 export interface ErrorDetail { field?: string; message?: string }

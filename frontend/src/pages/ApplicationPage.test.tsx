@@ -30,9 +30,27 @@ describe('страница заявки по next_action', () => {
     expect(screen.getByText('Принять')).toBeInTheDocument();
     expect(screen.getByText('Отказаться')).toBeInTheDocument();
   });
-  it('SIGN — кнопка подписать', async () => {
+  it('SIGN — документы, код подтверждения и пометка «имитация»', async () => {
     show('SIGNING', 'SIGN');
-    expect(await screen.findByText('Подписать')).toBeInTheDocument();
+    expect(await screen.findByText('Подпишите документы')).toBeInTheDocument();
+    expect(screen.getByText(/^Код подтверждения: \d{6}$/)).toBeInTheDocument();
+    expect(screen.getByText(/Имитация: реальной интеграции/)).toBeInTheDocument();
+  });
+  it('DISBURSED — выдача с явной пометкой «имитация»', async () => {
+    show('DISBURSED', 'NONE');
+    expect(await screen.findByText('Средства выданы')).toBeInTheDocument();
+    expect(screen.getByText(/Имитация: реальной интеграции с подписанием и выдачей нет/)).toBeInTheDocument();
+  });
+  it('оффер — блок «На что повлияло решение» из decision_highlights', async () => {
+    show('OFFER', 'NONE', { decision_highlights: ['Высокая выручка относительно суммы'], reason_messages: ['не должно показаться'] });
+    expect(await screen.findByText('На что повлияло решение')).toBeInTheDocument();
+    expect(screen.getByText('Высокая выручка относительно суммы')).toBeInTheDocument();
+    expect(screen.queryByText('не должно показаться')).not.toBeInTheDocument();
+  });
+  it('контр-оффер без decision_highlights — объяснение из reason_messages', async () => {
+    show('COUNTER_OFFER', 'NONE', { reason_messages: ['Мы можем предложить меньшую сумму'] });
+    expect(await screen.findByText('На что повлияло решение')).toBeInTheDocument();
+    expect(screen.getByText('Мы можем предложить меньшую сумму')).toBeInTheDocument();
   });
   it('NONE — только статус, без действий', async () => {
     show('SCORING', 'NONE');

@@ -6,6 +6,7 @@ import { Textarea } from '@alfalab/core-components-textarea';
 import { Attach } from '@alfalab/core-components-attach';
 import { Typography } from '@alfalab/core-components-typography';
 import { Gap } from '@alfalab/core-components-gap';
+import { CodeInput } from '@alfalab/core-components-code-input';
 import { api, http, API_BASE, MOCK, getToken, errorText, isVersionConflict, Application, HistoryItem, Offer, dt, money } from '../api/client';
 import { subscribeStatus } from '../api/events';
 import { StatusBadge, FINAL_BAD, ErrorPlate, H2, Hint, Loading, LABEL } from './shared';
@@ -51,14 +52,38 @@ export default function ApplicationPage() {
       <div className="row"><Button view="accent" onClick={() => nav('/apply')}>Заполнить заявку</Button><Button view="secondary" onClick={() => act('cancel')}>Отменить черновик</Button></div></div>}
     {a.next_action === 'ANSWER_INFO_REQUEST' && <InfoForm id={id!} onDone={refresh} />}
     {a.next_action === 'REVIEW_OFFER' && <OfferBox id={id!} onAccept={() => act('offer/accept', a.version)} onDecline={() => act('offer/decline', a.version)} />}
-    {a.next_action === 'SIGN' && <div className="card"><H2>Подпишите документы</H2><Typography.Text view="primary-medium" tag="p">Мы подготовили кредитный договор. Это демо: подпись ни к чему вас не обязывает.</Typography.Text><Button view="accent" onClick={() => act('sign')}>Подписать</Button></div>}
-    {a.status === 'DISBURSED' && <div className="card"><Plate view="positive" rounded title="Готово! Средства выданы">Это демонстрация: реальных денег и договоров нет.</Plate></div>}
-    {FINAL_BAD.includes(a.status) && (a.reason_messages?.length ?? 0) > 0 && <div className="card"><H2>Почему так получилось</H2>
-      <ul>{a.reason_messages!.map(m => <li key={m}><Typography.Text view="primary-medium">{m}</Typography.Text></li>)}</ul>
+    {a.next_action === 'SIGN' && <SignBox onSign={() => act('sign')} />}
+    {a.status === 'DISBURSED' && <div className="card"><Plate view="positive" rounded title="Средства выданы">{IMITATION}</Plate></div>}
+    {DECIDED.includes(a.status) && !FINAL_BAD.includes(a.status) && <Highlights title="На что повлияло решение" items={highlights(a)} />}
+    {FINAL_BAD.includes(a.status) && highlights(a).length > 0 && <div className="card"><H2>Почему так получилось</H2>
+      <ul>{highlights(a).map(m => <li key={m}><Typography.Text view="primary-medium">{m}</Typography.Text></li>)}</ul>
       <Hint>Что можно сделать: подайте новую заявку с другой суммой или сроком.</Hint><Gap size={16} /><Button view="accent" onClick={() => nav('/apply')}>Новая заявка с другими условиями</Button></div>}
     <div className="card"><H2>Как шла заявка</H2><ol className="tl">{[...hist].reverse().map((h, i) => <li key={i}><StatusBadge s={h.to_status} /> <Typography.Text view="primary-small" color="secondary">{dt(h.created_at)}</Typography.Text>{h.comment && <Hint>{h.comment}</Hint>}</li>)}</ol></div>
   </>;
 }
+// Объяснение клиенту (SCORING.md, «Объяснение решения клиенту»): decision_highlights из API, пока поля нет — reason_messages
+export const highlights = (a: Application) => a.decision_highlights?.length ? a.decision_highlights : a.reason_messages ?? [];
+const Highlights = ({ title, items }: { title: string; items: string[] }) => items.length ? <div className="card"><H2>{title}</H2>
+  <ul>{items.map(m => <li key={m}><Typography.Text view="primary-medium">{m}</Typography.Text></li>)}</ul></div> : null;
+// Подписание — имитация (ORGANIZER_QA.md, вопрос 12): код показывается на экране, реальной отправки кода нет
+export function SignBox({ onSign, code: fixed }: { onSign(): Promise<unknown> | void; code?: string }) {
+  const [code] = useState(() => fixed ?? String(Math.floor(100000 + Math.random() * 900000)));
+  const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
+  const check = (entered: string) => {
+    if (entered !== code) { setError('Неверный код. Введите код, указанный выше.'); return; }
+    setError(''); setBusy(true); Promise.resolve(onSign()).finally(() => setBusy(false));
+  };
+  return <div className="card"><H2>Подпишите документы</H2>
+    <Typography.Text view="primary-medium" tag="p">Мы подготовили документы по кредиту. Проверьте их и подтвердите подписание кодом.</Typography.Text>
+    <ul>{SIGN_DOCS.map(d => <li key={d}><Typography.Text view="primary-medium">{d}</Typography.Text></li>)}</ul>
+    <Plate view="attention" rounded title={`Код подтверждения: ${code}`}>{IMITATION} Код показан здесь, потому что подписание имитируется.</Plate><Gap size={16} />
+    <Typography.Text view="primary-small" color="secondary" tag="div">Введите код</Typography.Text><Gap size={8} />
+    <CodeInput fields={6} disabled={busy} error={error || undefined} onComplete={check} onChange={() => setError('')} />
+  </div>;
+}
+const IMITATION = 'Имитация: реальной интеграции с подписанием и выдачей нет, деньги и договоры не настоящие.';
+const SIGN_DOCS = ['Кредитный договор', 'Индивидуальные условия кредита', 'График платежей'];
+const DECIDED = ['OFFER', 'COUNTER_OFFER', 'ACCEPTED', 'SIGNING', 'DISBURSED', 'REJECTED'];
 function OfferBox({ id, onAccept, onDecline }: { id: string; onAccept(): void; onDecline(): void }) {
   const [o, setO] = useState<Offer | null>(null); useEffect(() => { api<Offer>(`/applications/${id}/offer`).then(setO).catch(() => {}); }, [id]);
   if (!o) return null;
