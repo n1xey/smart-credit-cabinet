@@ -1,7 +1,7 @@
 import yaml
 from fastapi import FastAPI
 
-from app.api import applications, auth, company, documents, feed, health, products
+from app.api import applications, auth, company, documents, feed, health, offers, products
 from app.config import get_settings
 from app.errors import install_error_handlers
 from app.logging import setup_logging
@@ -26,6 +26,7 @@ def create_app() -> FastAPI:
     app.include_router(applications.router, prefix=API_PREFIX)
     app.include_router(documents.router, prefix=API_PREFIX)
     app.include_router(feed.router, prefix=API_PREFIX)
+    app.include_router(offers.router, prefix=API_PREFIX)
 
     def contract_openapi() -> dict:
         """Источник схемы — контракт docs/api/openapi.yaml, а не автогенерация."""
