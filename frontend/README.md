@@ -16,6 +16,15 @@ React 18 + Vite + TypeScript. Без внешних CDN и шрифтов.
 - Ошибки 422 показываются вместе со списком полей из `details`.
 - Отказ оператора требует хотя бы один код причины из `docs/SCORING.md`; сумма и срок оффера — целые числа.
 
+## Что следует из ответов организаторов (`docs/ORGANIZER_QA.md`)
+- **Вход без регистрации:** кабинет для действующих клиентов банка, учётные записи заведены заранее (seed). Экрана регистрации нет.
+- **Профиль компании «из банка»:** приходит из `GET /company`, ИНН не редактируется; кнопка «Сверить с реестром» (`/company/lookup`) показывает расхождения и позволяет взять данные из реестра.
+- **Подписание — имитация с кодом:** список документов, код подтверждения показан на экране, ввод через `CodeInput`; на экранах подписания и выдачи явная пометка «Имитация: реальной интеграции с подписанием и выдачей нет». Код проверяется только в интерфейсе: в контракте у `POST /sign` тела нет (если бэкенд начнёт проверять код, нужен PR `contract`).
+- **«На что повлияло решение»:** для оффера, контр-оффера и отказа. Берём `decision_highlights` из API (поле описано в `SCORING.md`, в `openapi.yaml` его ещё нет — ждёт PR `contract`), пока его нет — `reason_messages`.
+- **Документы необязательны:** шаг мастера можно пропустить, банк запросит документ при необходимости.
+- **Ставки:** в мастере поясняем, что ставка = ключевая ставка Банка России + надбавка банка; сами цифры приходят из `/products` и оффера.
+- **Приоритет десктоп:** вёрстка рассчитана на десктоп, на телефоне открывается, но отдельно не дорабатывается. «Полезное для вас» оставлено как есть и не развивается.
+
 ## Дизайн-система
 UI собран на [core-components](https://core-ds.github.io/core-components/master/) Альфа-Банка (`@alfalab/core-components-*`, MIT).
 - Берём отдельные пакеты (button, input, select, slider-input, steps, table, plate, status, tag и т. д.), а не общий `@alfalab/core-components`: так меньше зависимостей.
@@ -25,5 +34,5 @@ UI собран на [core-components](https://core-ds.github.io/core-components
 - Версии зафиксированы точно (`--save-exact`). Новый пакет ставить так: `npm i --save-exact @alfalab/core-components-<имя>@<версия>`, версия старше двух недель.
 
 Зависимости для THIRD_PARTY_NOTICES: react, react-dom, react-router-dom (MIT), vite, @vitejs/plugin-react, typescript, openapi-typescript, @stoplight/prism-cli, образы node:20.17.0-alpine3.20, nginx:1.27.2-alpine.
-Дизайн-система (MIT, © Alfa-Bank, https://github.com/core-ds/core-components): @alfalab/core-components-amount, -amount-input, -attach, -button, -divider, -gap, -input, -link, -plate, -radio-group, -select, -skeleton, -slider-input, -space, -spinner, -status, -steps, -table, -tag, -textarea, -typography, -vars и их транзитивные @alfalab/* пакеты.
+Дизайн-система (MIT, © Alfa-Bank, https://github.com/core-ds/core-components): @alfalab/core-components-amount, -amount-input, -attach, -button, -divider, -gap, -input, -link, -plate, -radio-group, -select, -skeleton, -slider-input, -code-input, -space, -spinner, -status, -steps, -table, -tag, -textarea, -typography, -vars и их транзитивные @alfalab/* пакеты.
 Тесты (только dev): vitest (MIT), jsdom (MIT), @testing-library/react, /dom, /jest-dom (MIT).
