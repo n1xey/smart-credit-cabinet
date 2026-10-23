@@ -13,6 +13,7 @@ stateDiagram-v2
     DATA_CHECK --> NEEDS_INFO: данных/документов не хватает
     DATA_CHECK --> ENRICHMENT: данные полны и корректны
     DATA_CHECK --> REJECTED: стоп-фактор (например, невалидный ИНН)
+    DATA_CHECK --> MANUAL_REVIEW: лимит раундов исчерпан (INFO_ROUNDS_EXCEEDED)
     NEEDS_INFO --> DATA_CHECK: клиент ответил
     NEEDS_INFO --> EXPIRED: срок ответа истёк
     NEEDS_INFO --> CANCELLED: клиент отменяет
@@ -88,7 +89,7 @@ stateDiagram-v2
 | Шаг | Вход | Действия | Выход |
 |---|---|---|---|
 | `SUBMITTED → DATA_CHECK` | заявка | постановка в очередь | задача `data_check` |
-| `DATA_CHECK` | заявка, профиль, документы | валидация ИНН (контрольная сумма и длина по форме: ООО 10, ИП 12), диапазонов продукта, обязательных полей и документов | `NEEDS_INFO` (`DOCUMENT_MISSING`), `ENRICHMENT` или `REJECTED` (`INVALID_INN`) |
+| `DATA_CHECK` | заявка, профиль, документы | валидация ИНН (контрольная сумма и длина по форме: ООО 10, ИП 12), диапазонов продукта, обязательных полей и документов | `NEEDS_INFO` (`DOCUMENT_MISSING`), `ENRICHMENT`, `MANUAL_REVIEW` (`INFO_ROUNDS_EXCEEDED`) или `REJECTED` (`INVALID_INN`) |
 | `ENRICHMENT` | ИНН | запрос к мокам БКИ и ЕГРЮЛ/ФНС с таймаутом и 3 повторами (экспоненциальная пауза) | сохранённые `enrichment_results` → `SCORING`; при отказе источника `MANUAL_REVIEW` с причиной `SOURCE_UNAVAILABLE` |
 | `ACCEPTED → SIGNING` | заявка, оффер | формирование (имитация) пакета документов | задача `prepare_documents` → `SIGNING` |
 | `SCORING` | заявка + обогащение | стоп-факторы → скоринг → матрица решений (`SCORING.md`) | сохранённые `scoring_results`, `decisions` (+ `offers`) и новый статус |
