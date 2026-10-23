@@ -166,7 +166,7 @@ def upload_document(
             message="Ошибка при сохранении файла документа",
         ) from e
 
-    # 6. Сохранение в БД
+    # 6. Сохранение в БД с компенсацией (удалением файла с диска при ошибке commit)
     doc = Document(
         id=doc_id,
         application_id=app.id,
@@ -177,9 +177,18 @@ def upload_document(
         sha256=hasher.hexdigest(),
         mime_type=content_type,
     )
-    db.add(doc)
-    db.commit()
-    db.refresh(doc)
+    try:
+        db.add(doc)
+        db.commit()
+        db.refresh(doc)
+    except Exception as e:
+        db.rollback()
+        target_file_path.unlink(missing_ok=True)
+        raise ApiError(
+            status_code=500,
+            code=ErrorCode.INTERNAL_ERROR,
+            message="Ошибка при сохранении документа в базе данных",
+        ) from e
 
     return DocumentResponse.model_validate(doc)
 

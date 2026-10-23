@@ -1,4 +1,5 @@
 """Схемы для офферов, запросов уточнений и подписания."""
+import datetime as dt
 import uuid
 from datetime import datetime
 from typing import Any
@@ -22,6 +23,25 @@ class InfoRequestResponse(BaseModel):
     requested_by: str
     round: int
     created_at: datetime
+
+
+class CorrectedFieldsSchema(BaseModel):
+    """Строгая схема валидации исправляемых полей заявки и компании."""
+    model_config = ConfigDict(extra="forbid")
+
+    # Поля кредитной заявки
+    amount_rub: int | None = Field(default=None, gt=0, description="Сумма кредита в рублях")
+    term_months: int | None = Field(default=None, gt=0, description="Срок кредита в месяцах")
+    purpose: str | None = Field(default=None, min_length=1, max_length=500, description="Цель кредита")
+    revenue_12m_rub: int | None = Field(default=None, gt=0, description="Выручка за 12 месяцев")
+    net_profit_12m_rub: int | None = Field(default=None, description="Чистая прибыль за 12 месяцев")
+    existing_monthly_payments_rub: int | None = Field(default=None, ge=0, description="Ежемесячные платежи по другим кредитам")
+
+    # Поля профиля компании
+    name: str | None = Field(default=None, min_length=1, max_length=255, description="Наименование компании")
+    okved: str | None = Field(default=None, min_length=1, max_length=20, description="Код ОКВЭД")
+    address: str | None = Field(default=None, min_length=1, max_length=500, description="Юридический адрес")
+    registration_date: dt.date | None = Field(default=None, description="Дата регистрации компании")
 
 
 class InfoResponseInput(BaseModel):

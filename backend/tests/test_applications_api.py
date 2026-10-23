@@ -129,7 +129,7 @@ def test_get_application_etag_and_foreign_404(api_client, db_session, client_wit
     assert foreign_resp.json()["error"]["code"] == "NOT_FOUND"
 
 
-def test_patch_draft_with_and_without_if_match(api_client, client_with_company, seed_products):
+def test_patch_draft_with_and_without_if_match(api_client, client_with_company, seed_products, db_session):
     client, company = client_with_company
     create_resp = api_client.post(
         "/api/v1/applications",
@@ -167,6 +167,21 @@ def test_patch_draft_with_and_without_if_match(api_client, client_with_company, 
     assert no_header_resp.status_code == 200
     assert no_header_resp.json()["term_months"] == 18
     assert no_header_resp.json()["version"] == 3
+
+    # 4. PATCH с продуктом, отсутствующим в БД products -> 422 VALIDATION_ERROR
+    from app.models.tables import Product
+    seed_products[2]  # EXPRESS
+    # Удаляем один из продуктов из БД
+    db_session.query(Product).filter(Product.code == "EXPRESS").delete()
+    db_session.commit()
+
+    missing_prod_resp = api_client.patch(
+        f"/api/v1/applications/{app_id}",
+        json={"product_code": "EXPRESS"},
+        headers=auth_headers(client),
+    )
+    assert missing_prod_resp.status_code == 422
+    assert missing_prod_resp.json()["error"]["code"] == "VALIDATION_ERROR"
 
 
 def test_submit_validation_errors(api_client, client_with_company, seed_products):

@@ -209,6 +209,32 @@ def test_upload_document_size_limit(api_client, client_user, draft_application, 
     assert resp.json()["error"]["code"] == "PAYLOAD_TOO_LARGE"
 
 
+def test_upload_document_cleanup_on_db_error(api_client, client_user, draft_application, db_session, monkeypatch):
+    settings = get_settings()
+    app_dir = settings.uploads_dir / str(draft_application.id)
+
+    # Имитируем сбой БД при commit
+    def broken_commit():
+        raise RuntimeError("Simulated DB commit error")
+
+    monkeypatch.setattr(db_session, "commit", broken_commit)
+
+    pdf_content = b"%PDF-1.4\nvalid pdf content"
+    resp = api_client.post(
+        f"/api/v1/applications/{draft_application.id}/documents",
+        data={"doc_type": DocType.FINANCIAL_STATEMENT.value},
+        files={"file": ("doc.pdf", io.BytesIO(pdf_content), "application/pdf")},
+        headers=auth_headers(client_user),
+    )
+    assert resp.status_code == 500
+    assert resp.json()["error"]["code"] == "INTERNAL_ERROR"
+
+    # Файл на диске должен быть удален (компенсация), никаких сиротских файлов
+    if app_dir.exists():
+        files_in_dir = list(app_dir.iterdir())
+        assert len(files_in_dir) == 0
+
+
 def test_list_and_download_documents_and_404_isolation(
     api_client, client_user, other_client_with_company, operator_user, admin_user, draft_application
 ):

@@ -4,6 +4,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.schemas.company import CompanyInput, CompanyResponse
@@ -95,8 +96,16 @@ def upsert_my_company(
         company.okved = body.okved
         company.address = body.address
 
-    db.commit()
-    db.refresh(company)
+    try:
+        db.commit()
+        db.refresh(company)
+    except IntegrityError:
+        db.rollback()
+        raise ApiError(
+            status_code=409,
+            code=ErrorCode.CONFLICT,
+            message="Конфликт уникальности ИНН (уже зарегистрирован другим пользователем)",
+        )
     return company
 
 

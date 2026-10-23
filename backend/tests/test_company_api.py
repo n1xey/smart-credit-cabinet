@@ -97,6 +97,23 @@ def test_put_company_inn_conflict(api_client, db_session, client_user: User):
     assert resp2.json()["error"]["code"] == "CONFLICT"
 
 
+def test_put_company_integrity_error_rollback(api_client, client_user: User, monkeypatch, db_session):
+    from sqlalchemy.exc import IntegrityError
+
+    def broken_commit():
+        raise IntegrityError("duplicate key value violates unique constraint", params=None, orig=Exception())
+
+    monkeypatch.setattr(db_session, "commit", broken_commit)
+
+    resp = api_client.put(
+        "/api/v1/company",
+        json={"inn": "0000001011", "name": "ООО «Тест»", "legal_form": "OOO"},
+        headers=auth_headers(client_user),
+    )
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "CONFLICT"
+
+
 def test_lookup_company_not_found(api_client, client_user: User):
     # При отсутствии ИНН в реестре возвращается 404 NOT_FOUND (без подмены)
     resp = api_client.get(

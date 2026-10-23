@@ -239,23 +239,30 @@ def patch_draft(
     # 3. Валидация диапазонов продукта, если меняются сумма, срок или продукт
     target_product_code = body.product_code.value if body.product_code else app.product_code
     product = db.scalar(select(Product).where(Product.code == target_product_code))
-    if product is not None:
-        target_amount = body.amount_rub if body.amount_rub is not None else app.amount_rub
-        if target_amount is not None and not (product.min_amount_rub <= target_amount <= product.max_amount_rub):
-            raise ApiError(
-                status_code=422,
-                code=ErrorCode.VALIDATION_ERROR,
-                message=f"Сумма должна быть от {product.min_amount_rub:,} до {product.max_amount_rub:,} ₽",
-                details=[{"field": "amount_rub", "message": "Сумма вне диапазона продукта"}],
-            )
-        target_term = body.term_months if body.term_months is not None else app.term_months
-        if target_term is not None and not (product.min_term_months <= target_term <= product.max_term_months):
-            raise ApiError(
-                status_code=422,
-                code=ErrorCode.VALIDATION_ERROR,
-                message=f"Срок должен быть от {product.min_term_months} до {product.max_term_months} мес.",
-                details=[{"field": "term_months", "message": "Срок вне диапазона продукта"}],
-            )
+    if product is None:
+        raise ApiError(
+            status_code=422,
+            code=ErrorCode.VALIDATION_ERROR,
+            message=f"Продукт '{target_product_code}' не найден в каталоге",
+            details=[{"field": "product_code", "message": "Продукт не найден в каталоге"}],
+        )
+
+    target_amount = body.amount_rub if body.amount_rub is not None else app.amount_rub
+    if target_amount is not None and not (product.min_amount_rub <= target_amount <= product.max_amount_rub):
+        raise ApiError(
+            status_code=422,
+            code=ErrorCode.VALIDATION_ERROR,
+            message=f"Сумма должна быть от {product.min_amount_rub:,} до {product.max_amount_rub:,} ₽",
+            details=[{"field": "amount_rub", "message": "Сумма вне диапазона продукта"}],
+        )
+    target_term = body.term_months if body.term_months is not None else app.term_months
+    if target_term is not None and not (product.min_term_months <= target_term <= product.max_term_months):
+        raise ApiError(
+            status_code=422,
+            code=ErrorCode.VALIDATION_ERROR,
+            message=f"Срок должен быть от {product.min_term_months} до {product.max_term_months} мес.",
+            details=[{"field": "term_months", "message": "Срок вне диапазона продукта"}],
+        )
 
     # 4. Применение обновлений
     if body.product_code is not None:

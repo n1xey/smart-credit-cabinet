@@ -165,6 +165,48 @@ def test_answer_info_request_whitelist_validation(api_client, client_user, needs
     )
     assert resp.status_code == 422
 
+    # 4. Отрицательная выручка revenue_12m_rub
+    resp = api_client.post(
+        f"/api/v1/applications/{app.id}/info-request",
+        json={"corrected_fields": {"revenue_12m_rub": -50_000}},
+        headers=auth_headers(client_user),
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    # 5. Отрицательные текущие платежи existing_monthly_payments_rub
+    resp = api_client.post(
+        f"/api/v1/applications/{app.id}/info-request",
+        json={"corrected_fields": {"existing_monthly_payments_rub": -1000}},
+        headers=auth_headers(client_user),
+    )
+    assert resp.status_code == 422
+
+    # 6. Сумма amount_rub больше максимума продукта (WORKING_CAPITAL max = 10_000_000)
+    resp = api_client.post(
+        f"/api/v1/applications/{app.id}/info-request",
+        json={"corrected_fields": {"amount_rub": 99_000_000}},
+        headers=auth_headers(client_user),
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    # 7. Срок term_months меньше минимума продукта (WORKING_CAPITAL min = 3)
+    resp = api_client.post(
+        f"/api/v1/applications/{app.id}/info-request",
+        json={"corrected_fields": {"term_months": 1}},
+        headers=auth_headers(client_user),
+    )
+    assert resp.status_code == 422
+
+    # 8. Пустая цель purpose
+    resp = api_client.post(
+        f"/api/v1/applications/{app.id}/info-request",
+        json={"corrected_fields": {"purpose": ""}},
+        headers=auth_headers(client_user),
+    )
+    assert resp.status_code == 422
+
 
 def test_answer_info_request_success(api_client, client_user, needs_info_application, db_session):
     app, info_req = needs_info_application
@@ -221,6 +263,12 @@ def test_get_offer_and_isolation(api_client, client_user, other_client_with_comp
     # 2. Чужой клиент -> 404
     resp_other = api_client.get(f"/api/v1/applications/{app.id}/offer", headers=auth_headers(other_user))
     assert resp_other.status_code == 404
+
+    # 3. В статусе DRAFT оффер недоступен (строго 404), даже если в БД есть активная запись Offer
+    app.status = ApplicationStatus.DRAFT.value
+    resp_draft = api_client.get(f"/api/v1/applications/{app.id}/offer", headers=auth_headers(client_user))
+    assert resp_draft.status_code == 404
+    assert resp_draft.json()["error"]["code"] == "NOT_FOUND"
 
 
 def test_accept_offer_with_and_without_if_match(api_client, client_user, offer_application, db_session):
