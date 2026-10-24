@@ -220,6 +220,13 @@ ALLOWED_TRANSITIONS: list[TransitionRule] = [
         frozenset({ActorType.SYSTEM}),
         "Система сформировала пакет документов на подписание",
     ),
+    TransitionRule(
+        ApplicationStatus.ACCEPTED,
+        ApplicationStatus.MANUAL_REVIEW,
+        frozenset({ActorType.SYSTEM}),
+        "Сбой формирования документов, передача оператору",
+    ),
+
     # SIGNING
     TransitionRule(
         ApplicationStatus.SIGNING,

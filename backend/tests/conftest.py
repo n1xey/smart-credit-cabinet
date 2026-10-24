@@ -62,60 +62,12 @@ def client(app):
 # ---------------------------------------------------------------------------
 # SQLite-совместимая тестовая схема (JSON вместо JSONB, без PG-CHECK)
 # ---------------------------------------------------------------------------
-def _build_test_metadata() -> MetaData:
-    """Воссоздаёт схему БД без PostgreSQL-специфики для SQLite."""
-    meta = MetaData()
-
-    _PK = dict(primary_key=True)
-    _NOW = dict(server_default=text("CURRENT_TIMESTAMP"))
-
-    def _ts(**kw):
-        from sqlalchemy import DateTime
-        return kw  # используем keyword-only для mapped_column
-
-    Table(
-        "users", meta,
-        *[
-            __import__("sqlalchemy", fromlist=["Column"]).Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-            __import__("sqlalchemy", fromlist=["Column"]).Column("email", Text, unique=True, nullable=False),
-            __import__("sqlalchemy", fromlist=["Column"]).Column("full_name", Text, nullable=False),
-            __import__("sqlalchemy", fromlist=["Column"]).Column("password_hash", Text, nullable=False),
-            __import__("sqlalchemy", fromlist=["Column"]).Column("role", Text, nullable=False, server_default="CLIENT"),
-            __import__("sqlalchemy", fromlist=["Column"]).Column("created_at", Text, server_default=text("CURRENT_TIMESTAMP")),
-        ],
-    )
-
-    return meta
-
-
-# Проще: переиспользуем модели SQLAlchemy напрямую, но заменяем JSONB на JSON через event
-@pytest.fixture(scope="session")
-def _sqlite_engine():
-    """Создаёт in-memory SQLite с патченными типами."""
-    from sqlalchemy import event as sa_event
-    from sqlalchemy.dialects.postgresql import JSONB
-    from sqlalchemy.types import JSON, TypeDecorator
-
-    # Подменяем JSONB на JSON для SQLite
-    class _JsonCompat(TypeDecorator):
-        impl = JSON
-        cache_ok = True
-
-    engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-    )
-
-    @sa_event.listens_for(engine, "connect")
-    def _fk_on(dbapi_conn, _):
-        dbapi_conn.execute("PRAGMA foreign_keys=ON")
-
-    # Создаём SQLite-совместимую копию схемы вручную
+def create_test_schema(engine) -> MetaData:
+    """Создаёт SQLite-совместимую копию схемы БД вручную."""
     from sqlalchemy import Column, DateTime
     from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 
     test_meta = MetaData()
-
     col = Column
 
     Table("users", test_meta,
@@ -262,7 +214,55 @@ def _sqlite_engine():
     )
 
     test_meta.create_all(engine)
+    return test_meta
+
+
+# Проще: переиспользуем модели SQLAlchemy напрямую, но заменяем JSONB на JSON через event
+@pytest.fixture(scope="session")
+def _sqlite_engine():
+    """Создаёт in-memory SQLite с патченными типами."""
+    from sqlalchemy import event as sa_event
+    from sqlalchemy.dialects.postgresql import JSONB
+    from sqlalchemy.types import JSON, TypeDecorator
+
+    # Подменяем JSONB на JSON для SQLite
+    class _JsonCompat(TypeDecorator):
+        impl = JSON
+        cache_ok = True
+
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+    )
+
+    @sa_event.listens_for(engine, "connect")
+    def _fk_on(dbapi_conn, _):
+        dbapi_conn.execute("PRAGMA foreign_keys=ON")
+
+    create_test_schema(engine)
     return engine
+
+
+@pytest.fixture
+def worker_db(tmp_path):
+    """File-based SQLite для многопоточных/мульти-сессионных тестов воркера (WAL-режим)."""
+    from sqlalchemy import event as sa_event
+
+    db_file = tmp_path / "worker_test.db"
+    engine = create_engine(
+        f"sqlite:///{db_file}",
+        connect_args={"timeout": 30, "check_same_thread": False},
+    )
+
+    @sa_event.listens_for(engine, "connect")
+    def _sqlite_init(dbapi_conn, _):
+        dbapi_conn.execute("PRAGMA foreign_keys=ON")
+        dbapi_conn.execute("PRAGMA journal_mode=WAL")
+
+    create_test_schema(engine)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    yield engine, session_factory
+    engine.dispose()
 
 
 @pytest.fixture

@@ -35,6 +35,7 @@ stateDiagram-v2
     OFFER --> EXPIRED: срок оффера истёк
     COUNTER_OFFER --> EXPIRED: срок оффера истёк
     ACCEPTED --> SIGNING: система формирует документы
+    ACCEPTED --> MANUAL_REVIEW: сбой формирования документов
     SIGNING --> DISBURSED: клиент «подписал» (имитация)
     SIGNING --> EXPIRED: срок подписания истёк
     REJECTED --> [*]
@@ -56,7 +57,7 @@ stateDiagram-v2
 | `MANUAL_REVIEW` | Разбор оператором | Заявку рассматривает специалист банка | оператор |
 | `OFFER` | Предложение на запрошенных условиях | Банк одобрил заявку, посмотрите условия | клиент |
 | `COUNTER_OFFER` | Предложение других условий | Банк готов предложить другие условия | клиент |
-| `ACCEPTED` | Клиент принял | Условия приняты, готовим документы | воркер (задача `prepare_documents` → `SIGNING`) |
+| `ACCEPTED` | Клиент принял | Условия приняты, готовим документы | воркер (`prepare_documents` → `SIGNING`, при сбое → `MANUAL_REVIEW`) |
 | `SIGNING` | Подписание (имитация) | Подпишите документы | клиент |
 | `DISBURSED` | Выдача (имитация) | Средства выданы (демо) | клиент (`/sign`), актор перехода `CLIENT` |
 | `REJECTED` | Отказ | Банк не может одобрить заявку. Причины ниже | финал |
@@ -78,7 +79,8 @@ stateDiagram-v2
 9. `take` (взять в работу) статус не меняет: пишется аудит-событие и `assigned_operator_id`; заявку, занятую другим оператором, взять нельзя (`409 CONFLICT`). Решение принимает только назначенный оператор.
 10. `accept` выполняет `OFFER|COUNTER_OFFER → ACCEPTED` (актор `CLIENT`) и ставит задачу `prepare_documents`; воркер переводит `ACCEPTED → SIGNING` (актор `SYSTEM`).
 11. `expires_at` зависит от статуса: `NEEDS_INFO` → +`NEEDS_INFO_TTL_HOURS`, `OFFER`/`COUNTER_OFFER` → `valid_until` оффера, `SIGNING` → +`SIGNING_TTL_HOURS`; в остальных статусах `null`.
-12. Зависшие задачи: воркер возвращает в `PENDING` задачи `RUNNING` с `locked_at` старше `JOB_LOCK_TIMEOUT_SEC`; заявка в `DATA_CHECK`/`ENRICHMENT`/`SCORING` без активной задачи пересоздаёт её (watchdog).
+12. Зависшие задачи: воркер возвращает в `PENDING` задачи `RUNNING` с `locked_at` старше `JOB_LOCK_TIMEOUT_SEC`; заявка в `DATA_CHECK`/`ENRICHMENT`/`SCORING`/`ACCEPTED` без активной задачи пересоздаёт её (watchdog).
+
 13. Из финальных статусов (`REJECTED`, `CANCELLED`, `EXPIRED`, `DISBURSED`) переходов нет. Новая попытка — новая заявка (можно «повторить заявку» копированием данных).
 
 ## События для интерфейса

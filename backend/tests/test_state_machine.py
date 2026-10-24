@@ -122,8 +122,8 @@ def create_application(
 # 1. Полнота графа переходов (все 29 валидных переходов)
 # ---------------------------------------------------------------------------
 def test_all_transitions_defined():
-    """Проверяем, что в графе ровно 30 переходов (29 по базовой диаграмме + 1 эскалация раундов по правилу 7)."""
-    assert len(ALLOWED_TRANSITIONS) == 30
+    """Проверяем, что в графе ровно 31 переход (29 по базовой диаграмме + 1 эскалация раундов по правилу 7 + 1 сбой подготовки документов ACCEPTED -> MANUAL_REVIEW)."""
+    assert len(ALLOWED_TRANSITIONS) == 31
 
 
 @pytest.mark.parametrize("rule", ALLOWED_TRANSITIONS, ids=lambda r: f"{r.from_status}->{r.to_status}")
@@ -908,4 +908,46 @@ def test_get_allowed_transitions_respects_actor_role(
         actor_role=Role.CLIENT.value,
     )
     assert set(res_correct_client) == {ApplicationStatus.SUBMITTED, ApplicationStatus.CANCELLED}
+
+
+def test_accepted_to_manual_review_on_pipeline_error(
+    db_session: Session,
+    company: Company,
+    client_user: User,
+    product: Product,
+):
+    """Сбой формирования документов в статусе ACCEPTED переводит заявку в MANUAL_REVIEW с PIPELINE_ERROR."""
+    app = create_application(
+        db_session,
+        company,
+        client_user,
+        product,
+        status=ApplicationStatus.ACCEPTED,
+    )
+
+    updated = transition(
+        session=db_session,
+        application=app,
+        to_status=ApplicationStatus.MANUAL_REVIEW,
+        actor_type=ActorType.SYSTEM,
+        actor_id=None,
+        actor_role="SYSTEM",
+        reason_code="PIPELINE_ERROR",
+        comment="Ошибка формирования пакета документов воркером",
+    )
+
+    assert updated.status == ApplicationStatus.MANUAL_REVIEW.value
+
+    # Запись в истории
+    hist = (
+        db_session.query(ApplicationStatusHistory)
+        .filter_by(application_id=app.id)
+        .order_by(ApplicationStatusHistory.created_at.desc())
+        .first()
+    )
+    assert hist is not None
+    assert hist.from_status == ApplicationStatus.ACCEPTED.value
+    assert hist.to_status == ApplicationStatus.MANUAL_REVIEW.value
+    assert hist.actor_type == ActorType.SYSTEM.value
+    assert hist.reason_code == "PIPELINE_ERROR"
 

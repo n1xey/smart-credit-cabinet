@@ -28,12 +28,16 @@ class Settings(BaseSettings):
     jwt_ttl_minutes: int = 60
     login_rate_limit_per_minute: int = 10
 
-    # таймеры процесса
+    # таймеры процесса и воркера
     needs_info_ttl_hours: int = 72
     offer_ttl_hours: int = 72
     signing_ttl_hours: int = 72
     max_info_rounds: int = 2
     job_lock_timeout_sec: int = 120
+    job_max_attempts: int = 3
+    job_base_backoff_sec: int = 2
+    watchdog_interval_sec: int = 60
+
 
     # документы
     uploads_dir: Path = Path("/data/uploads")
