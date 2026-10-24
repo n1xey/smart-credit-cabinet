@@ -122,7 +122,7 @@ erDiagram
       timestamptz answered_at }
     jobs { uuid id PK
       uuid application_id FK
-      text type "data_check|enrichment|scoring_decision|prepare_documents|expire_check"
+      text type "data_check|enrichment|scoring_decision|prepare_documents"
       text step_key "идемпотентность: например version заявки"
       jsonb payload
       text state "PENDING|RUNNING|DONE|FAILED"
