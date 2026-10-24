@@ -32,45 +32,48 @@ sequenceDiagram
         W-->>C: NEEDS_INFO (запрос уточнений)
         C->>API: ответ и документы
         API->>W: возврат в DATA_CHECK
+    else лимит раундов уточнений исчерпан
+        W-->>O: MANUAL_REVIEW (INFO_ROUNDS_EXCEEDED)
     else ИНН неверен
         W-->>C: REJECTED (INVALID_INN)
-    end
-    W->>EXT: запрос БКИ и ЕГРЮЛ (таймаут, до 3 повторов)
-    alt источник недоступен
-        W-->>O: MANUAL_REVIEW (SOURCE_UNAVAILABLE)
-    else данные получены
-        W->>S: заявка и обогащение
-        S->>S: стоп-факторы, балльная карта, группа риска
-        S->>S: матрица решений (продукт, сумма, срок, лимиты)
-        S-->>W: исход и условия
-    end
-    alt оффер на запрошенных условиях
-        W-->>C: OFFER
-    else другие условия
-        W-->>C: COUNTER_OFFER
-    else нужна проверка
-        W-->>O: MANUAL_REVIEW
-        O->>API: take, затем решение с комментарием
-        API-->>C: OFFER, COUNTER_OFFER, NEEDS_INFO или REJECTED
-    else отказ
-        W-->>C: REJECTED (reason_codes)
+    else данные полны, статус ENRICHMENT
+        W->>EXT: запрос БКИ и ЕГРЮЛ (таймаут, до 3 повторов)
+        alt источник недоступен
+            W-->>O: MANUAL_REVIEW (SOURCE_UNAVAILABLE)
+        else данные получены
+            W->>S: заявка и обогащение
+            S->>S: стоп-факторы, балльная карта, группа риска
+            S->>S: матрица решений (продукт, сумма, срок, лимиты)
+            S-->>W: исход и условия
+            alt оффер на запрошенных условиях
+                W-->>C: OFFER
+            else другие условия
+                W-->>C: COUNTER_OFFER
+            else нужна проверка
+                W-->>O: MANUAL_REVIEW
+                O->>API: take, затем решение с комментарием
+                API-->>C: OFFER, COUNTER_OFFER, NEEDS_INFO или REJECTED
+            else отказ
+                W-->>C: REJECTED (reason_codes)
+            end
+        end
     end
     C->>API: accept (If-Match)
     API-->>C: ACCEPTED
     API->>W: задача prepare_documents
     W-->>C: SIGNING
-    C->>API: sign (имитация)
-    API-->>C: DISBURSED (демо)
+    C->>API: sign (ввод кода подтверждения, имитация, код проверяется в интерфейсе, см. расхождение 2)
+    API-->>C: DISBURSED (имитация выдачи)
 ```
 
 ## Диаграмма: данные и ответственность по этапам
 
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph CL[Клиент]
         A1[Выбор продукта] --> A2[Заявка и финансовые данные]
-        A2 --> A3[Ответ на уточнения]
-        A5[Принять или отказаться] --> A6[Подписать, имитация]
+        A3[Ответ на уточнения]
+        A5[Принять или отказаться] --> A6[Ввод кода подтверждения, имитация]
     end
     subgraph BK[Банк: автоматика]
         B1[Проверка полноты и ИНН] --> B2[Обогащение]
@@ -88,14 +91,17 @@ flowchart LR
     A2 --> B1
     B1 -->|нет документа| A3
     A3 --> B1
+    B1 -->|лимит раундов уточнений| C1
     B2 <--> E1
     B2 <--> E2
     B4 -->|OFFER, COUNTER_OFFER| A5
     B4 -->|MANUAL_REVIEW| C1
-    C3 -->|OFFER, COUNTER_OFFER, NEEDS_INFO, REJECTED| A5
-    A5 --> B7 --> A6
+    C3 -->|OFFER, COUNTER_OFFER| A5
+    C3 -->|NEEDS_INFO| A3
+    C3 -->|REJECTED| X
     B4 -->|REJECTED| X[Отказ с причинами]
-    A6 --> Z[Выдача, DISBURSED]
+    A5 --> B7 --> A6
+    A6 --> Z[Выдача, DISBURSED, имитация]
 ```
 
 ## Данные на каждом этапе
@@ -104,7 +110,7 @@ flowchart LR
 |---|---|---|---|
 | Профиль | ИНН, форма, название, дата регистрации, ОКВЭД, адрес | Профиль компании (сверен с ЕГРЮЛ) | `companies` |
 | Заявка | Продукт, сумма, срок, цель, выручка, прибыль, текущие платежи | Заявка в статусе `DRAFT`, затем `SUBMITTED` | `applications` |
-| Проверка данных | Заявка, профиль, документы | `ENRICHMENT`, `NEEDS_INFO` или `REJECTED` | `application_status_history`, `info_requests`, `documents` |
+| Проверка данных | Заявка, профиль, документы | `ENRICHMENT`, `NEEDS_INFO`, `MANUAL_REVIEW` (`INFO_ROUNDS_EXCEEDED`) или `REJECTED` | `application_status_history`, `info_requests`, `documents` |
 | Обогащение | ИНН | Балл и просрочки БКИ, статус и флаги реестра | `enrichment_results` |
 | Скоринг | Заявка и обогащение | Балл 0–100, группа A–E, разбор по факторам, стоп-факторы | `scoring_results` |
 | Решение | Скоринг, продукт, сумма, срок | Исход, условия, коды причин | `decisions`, `offers` |
@@ -115,7 +121,7 @@ flowchart LR
 
 | Исход | Когда | Кто решает |
 |---|---|---|
-| `OFFER` | Группы A и B (и C) в пределах платёжеспособности и автолимита продукта | Система |
+| `OFFER` | Группы A и B (и C) в пределах платёжеспособности и автолимита продукта; оператор тоже может одобрить на запрошенных условиях после `MANUAL_REVIEW` | Система или оператор |
 | `COUNTER_OFFER` | Сумма больше платёжеспособности клиента; в MVP сумма снижается до расчётной | Система или оператор |
 | `NEEDS_INFO` | Не хватает документа, расхождение с реестром, запрос оператора | Система или оператор |
 | `MANUAL_REVIEW` | Группа D, сумма выше автолимита, источник недоступен, исчерпаны раунды уточнений | Оператор |
