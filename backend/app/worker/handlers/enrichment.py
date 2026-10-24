@@ -121,7 +121,7 @@ def handle_enrichment(session: Session, job: Job, deps: WorkerDeps) -> None:
     if existing_egrul is None:
         log.info("fetching_egrul_data", extra={"inn": company.inn, "application_id": str(app.id)})
         egrul_company = deps.egrul_client.lookup(company.inn)
-        egrul_payload = egrul_company.model_dump() if egrul_company is not None else {}
+        egrul_payload = egrul_company.model_dump(mode="json") if egrul_company is not None else {}
         _save_enrichment_result(deps.session_factory, app.id, "EGRUL", egrul_payload, status="OK")
 
     # 3. Оба сервиса успешно ответили -> переводим заявку в SCORING

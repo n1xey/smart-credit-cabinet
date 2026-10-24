@@ -23,17 +23,24 @@ from app.worker.queue import complete_job
 log = logging.getLogger("app.worker.handlers.data_check")
 
 
-def _calculate_business_age_months(reg_date_str: str | None) -> int:
-    """Вычисляет возраст бизнеса в месяцах по строке даты регистрации (ГГГГ-ММ-ДД)."""
-    if not reg_date_str:
+from datetime import date, datetime, timezone
+
+
+def _calculate_business_age_months(reg_date_val: date | str | None) -> int:
+    """Вычисляет возраст бизнеса в месяцах по объекту date или строке (ГГГГ-ММ-ДД)."""
+    if not reg_date_val:
         return 0
-    try:
-        reg_date = datetime.strptime(reg_date_str[:10], "%Y-%m-%d").date()
-        today = datetime.now(timezone.utc).date()
-        return (today.year - reg_date.year) * 12 + (today.month - reg_date.month)
-    except Exception:
-        log.warning("invalid_registration_date_format", extra={"reg_date": reg_date_str})
-        return 0
+    if isinstance(reg_date_val, str):
+        try:
+            parsed_date = datetime.strptime(reg_date_val[:10], "%Y-%m-%d").date()
+        except Exception:
+            log.warning("invalid_registration_date_format", extra={"reg_date": reg_date_val})
+            return 0
+    else:
+        parsed_date = reg_date_val
+
+    today = datetime.now(timezone.utc).date()
+    return (today.year - parsed_date.year) * 12 + (today.month - parsed_date.month)
 
 
 def handle_data_check(session: Session, job: Job, deps: WorkerDeps) -> None:

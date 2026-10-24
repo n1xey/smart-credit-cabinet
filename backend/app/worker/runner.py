@@ -94,11 +94,17 @@ class WorkerRunner:
         return True
 
     def run_once(self) -> int:
-        """Выполняет все готовые задачи в очереди, один цикл watchdog и завершает работу.
+        """Выполняет проверки watchdog и все готовые задачи в очереди.
 
         Возвращает 0 при успешном завершении.
         """
         log.info("starting_run_once")
+
+        # 1. Сначала watchdog восстанавливает зависшие задачи и дедлайны
+        watchdog_stats = run_watchdog_cycle(self.deps)
+        log.info("run_once_watchdog_started", extra=watchdog_stats)
+
+        # 2. Обрабатываем все доступные задачи (включая восстановленные)
         processed_count = 0
         while not self._stop_requested:
             has_job = self.process_next_job()
@@ -108,9 +114,9 @@ class WorkerRunner:
 
         log.info("run_once_jobs_processed", extra={"count": processed_count})
 
-        # Выполняем цикл проверок watchdog
-        watchdog_stats = run_watchdog_cycle(self.deps)
-        log.info("run_once_watchdog_finished", extra=watchdog_stats)
+        # 3. Финальный проход проверок дедлайнов
+        final_watchdog_stats = run_watchdog_cycle(self.deps)
+        log.info("run_once_watchdog_finished", extra=final_watchdog_stats)
 
         return 0
 
